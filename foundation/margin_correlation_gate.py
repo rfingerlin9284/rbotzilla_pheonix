@@ -207,7 +207,17 @@ class MarginCorrelationGate:
 
         # New order would exceed
         if new_order:
-            estimated_order_margin = new_order.units * new_order.price * 0.02  # ~2% margin
+            # Margin estimate must be in USD regardless of pair type.
+            # USD_XXX (USD_JPY, USD_CAD): base IS dollar → 1 unit = $1 notional
+            # XXX_USD (EUR_USD, GBP_USD): quote is USD  → notional = units × price
+            # Cross pairs: approximate via price (conservative)
+            parts = new_order.symbol.upper().replace("/", "_").split("_")
+            base = parts[0] if len(parts) == 2 else ""
+            if base == "USD":
+                usd_notional = float(new_order.units)          # 1 unit = $1
+            else:
+                usd_notional = float(new_order.units) * float(new_order.price)
+            estimated_order_margin = usd_notional * 0.02       # ~2% margin at 50:1 leverage
             projected_margin = total_margin_used + estimated_order_margin
             projected_pct = projected_margin / self.account_nav
 

@@ -9,6 +9,16 @@ Environment-Agnostic: practice/live determined ONLY by API endpoint & token
 PIN: 841921 | Generated: 2025-10-15
 """
 
+# ── Non-interactive / headless safety guard ────────────────────────────────
+# VS Code task terminals and nohup sessions have no TTY.  Exit here only if
+# we are genuinely NOT meant to run (e.g. accidentally sourced).  Set
+# RBOT_FORCE_RUN=1 to bypass any TTY check unconditionally.
+import os as _os
+if not _os.environ.get('RBOT_FORCE_RUN') and _os.environ.get('RBOT_REQUIRE_TTY'):
+    import sys as _sys
+    if not _sys.stdout.isatty():
+        _sys.exit(0)
+
 import sys
 from pathlib import Path
 import os
@@ -170,15 +180,16 @@ class OandaTradingEngine:
         # ========================================================================
         # MARGIN & CORRELATION GUARDIAN GATES (NEW)
         # ========================================================================
-        # Get account NAV for gate calculations
-        # Use default NAV for bootstrap - will be updated from API calls
-        account_nav = 2000.0  # Default OANDA practice account NAV
+        # Get account NAV for gate calculations — OandaAccount is a dataclass
+        account_nav = 10000.0  # safe fallback
         try:
             if hasattr(self.oanda, 'get_account_info'):
                 account_info = self.oanda.get_account_info()
-                account_nav = float(account_info.get('NAV', 2000.0))
+                if account_info is not None:
+                    # OandaAccount dataclass: use .balance attribute
+                    account_nav = float(getattr(account_info, 'balance', None) or 10000.0)
         except Exception as e:
-            self.display.warn(f"⚠️  Could not fetch account NAV: {e}, using default $2000")
+            self.display.warning(f"⚠️  Could not fetch account NAV: {e}, using default $10k")
         
         self.gate = MarginCorrelationGate(account_nav=account_nav)
         self.current_positions = []  # Track positions for gate monitoring
@@ -191,7 +202,10 @@ class OandaTradingEngine:
             'EUR_USD', 'GBP_USD', 'USD_JPY', 'AUD_USD', 'USD_CAD',
         ]
         
-        self.min_trade_interval = 300  # 5 minutes minimum (M15 Charter floor)
+        self.min_trade_interval = 300  # 5 minutes when positions FULL (M15 Charter floor)
+        # Scan cadence: fast when slots remain, slow only when at capacity
+        self.scan_fast_seconds = int(os.getenv('RBOT_SCAN_FAST_SECONDS', '60'))
+        self.scan_slow_seconds = int(os.getenv('RBOT_SCAN_SLOW_SECONDS', '300'))
         
         # Confidence gate — reject signals below this threshold
         # Reference: PATCH_PROPOSAL MIN_CONFIDENCE = 0.55
@@ -537,34 +551,30 @@ class OandaTradingEngine:
             return signal_data
     
     def calculate_position_size(self, symbol: str, entry_price: float) -> int:
-        """Calculate Charter-compliant position size to meet $15k minimum notional"""
+        """Calculate Charter-compliant position size to meet $15k minimum notional.
+
+        Notional rule by pair type:
+          USD_XXX  (USD_CAD, USD_JPY, USD_CHF …): 1 unit = $1 USD  → need min_notional units
+          XXX_USD  (EUR_USD, GBP_USD, AUD_USD …): 1 unit = price $ → need min_notional / price units
+          crosses  (EUR_JPY, GBP_CAD …):          approximate via price; gate will verify
+        """
         import math
-        
-        # CRITICAL FIX: JPY pairs have special pip value (0.01 vs 0.0001)
-        # This changes notional calculation significantly
-        
-        pip_size = 0.01 if 'JPY' in symbol else 0.0001
-        
-        # Calculate required units to meet minimum notional ($15,000)
-        # For JPY pairs: entry_price is ~150, so 1 unit = ~150 * 0.01 per pip
-        # For regular pairs: entry_price is ~1.05, so 1 unit = ~1.05 * 0.0001 per pip
-        
-        required_units = math.ceil(self.min_notional_usd / entry_price)
-        
-        # JPY pairs need special handling - multiply by 10 since pip value is 10x larger
-        if 'JPY' in symbol:
-            required_units = math.ceil(required_units * 10)
-        
-        # Round up to nearest 100 for clean sizing
+        parts = symbol.upper().split("_")
+        base  = parts[0] if len(parts) == 2 else ""
+        quote = parts[1] if len(parts) == 2 else ""
+
+        if base == "USD":
+            # USD_JPY, USD_CAD, USD_CHF — base IS dollars, 1 unit = $1
+            required_units = math.ceil(self.min_notional_usd)
+        elif quote == "USD":
+            # EUR_USD, GBP_USD, AUD_USD — notional = units × price
+            required_units = math.ceil(self.min_notional_usd / entry_price)
+        else:
+            # Cross pair — use price as rough proxy; charter gate will catch any miss
+            required_units = math.ceil(self.min_notional_usd / entry_price)
+
+        # Round up to nearest 100 for clean order sizes
         position_size = math.ceil(required_units / 100) * 100
-        
-        # Verify we meet minimum notional
-        notional = position_size * entry_price
-        if notional < self.min_notional_usd:
-            # Add extra units for JPY pairs
-            add_units = 100 if 'JPY' not in symbol else 1000
-            position_size += add_units
-        
         return position_size
     
     def _load_global_active_pairs(self) -> set:
@@ -823,12 +833,15 @@ class OandaTradingEngine:
             # ========================================================================
             # 🛡️ PRE-TRADE GUARDIAN GATE CHECK (NEW)
             # ========================================================================
-            # Get current account margin
+            # Get current account margin — OandaAccount is a dataclass
             current_margin_used = 0
             try:
                 if hasattr(self.oanda, 'get_account_info'):
                     account_info = self.oanda.get_account_info()
-                    current_margin_used = float(account_info.get('marginUsed', 0))
+                    if account_info is not None:
+                        current_margin_used = float(
+                            getattr(account_info, 'margin_used', None) or 0
+                        )
             except Exception as e:
                 self.display.warn(f"⚠️  Could not fetch margin info: {e}")
             
@@ -867,28 +880,53 @@ class OandaTradingEngine:
                 )
                 return None
             
-            # CHARTER ENFORCEMENT: Verify minimum notional (GATED PRE-ORDER VALIDATION)
+            # CHARTER ENFORCEMENT: Verify minimum notional — UPSIZE instead of reject
             if notional_value < self.min_notional_usd:
-                self.display.error(f"❌ CHARTER VIOLATION: Notional ${notional_value:,.0f} < ${self.min_notional_usd:,}")
-                self.display.error(f"   GATED LOGIC: Order blocked before submission")
+                import math as _math
+                _parts = symbol.upper().split("_")
+                _base  = _parts[0] if len(_parts) == 2 else ""
+                _quote = _parts[1] if len(_parts) == 2 else ""
+                if _base == "USD":
+                    _req = _math.ceil(self.min_notional_usd)
+                elif _quote == "USD":
+                    _req = _math.ceil(self.min_notional_usd / entry_price)
+                else:
+                    _req = _math.ceil(self.min_notional_usd / entry_price)
+                _new_size = _math.ceil(max(position_size, _req) / 100) * 100
+                _new_notional = get_usd_notional(_new_size, symbol, entry_price, self.oanda) or (_new_size * entry_price)
+
+                self.display.success(
+                    f"⚙️  UPSIZE: {symbol} units {position_size:,} → {_new_size:,} "
+                    f"to meet ${self.min_notional_usd:,} notional "
+                    f"(was ${notional_value:,.0f} → now ${_new_notional:,.0f})"
+                )
                 log_narration(
-                    event_type="CHARTER_VIOLATION",
+                    event_type="UPSIZE_TO_MIN_NOTIONAL",
                     details={
-                        "action": "PRE_ORDER_BLOCK",
-                        "violation": "MIN_NOTIONAL_PRE_ORDER",
-                        "notional_usd": round(notional_value, 2),
-                        "min_required_usd": self.min_notional_usd,
                         "symbol": symbol,
                         "direction": direction,
-                        "position_size": position_size,
+                        "units_before": position_size,
+                        "units_after": _new_size,
+                        "notional_before": round(notional_value, 2),
+                        "notional_after": round(_new_notional, 2),
+                        "min_required_usd": self.min_notional_usd,
                         "entry_price": entry_price,
-                        "enforcement": "GATED_LOGIC_AUTOMATIC",
-                        "status": "BLOCKED_BEFORE_SUBMISSION"
                     },
                     symbol=symbol,
-                    venue="oanda"
+                    venue="risk"
                 )
-                return None
+                position_size  = _new_size
+                notional_value = _new_notional
+
+                # Re-check margin gate with new size
+                gate_order.units = position_size
+                _new_margin = position_size * (1.0 if _base == "USD" else entry_price) * 0.02
+                _proj_pct = (current_margin_used + _new_margin) / max(self.gate.account_nav, 1)
+                if _proj_pct > self.gate.MARGIN_CAP_PCT:
+                    self.display.error(
+                        f"❌ POST-UPSIZE MARGIN CAP: {_proj_pct*100:.1f}% after upsize — skipping"
+                    )
+                    return None
             
             # Display market data
             self.display.section("MARKET SCAN")
@@ -899,7 +937,7 @@ class OandaTradingEngine:
                 symbol,
                 price_data['bid'],
                 price_data['ask'],
-                price_data['spread'] / 0.0001  # Convert to pips
+                price_data['spread']  # already in pips
             )
             
             # Calculate stops.
@@ -1764,11 +1802,32 @@ class OandaTradingEngine:
                 
                 # Check existing positions
                 self.check_positions()
+
+                # Refresh gate NAV from live account balance each cycle
+                try:
+                    if hasattr(self.oanda, 'get_account_info'):
+                        _acct = self.oanda.get_account_info()
+                        if _acct is not None:
+                            _nav = float(getattr(_acct, 'balance', None) or self.gate.account_nav)
+                            if _nav != self.gate.account_nav:
+                                self.gate.account_nav = _nav
+                                self.gate.max_margin_usd = _nav * self.gate.MARGIN_CAP_PCT
+                except Exception:
+                    pass
                 
                 # ── Multi-strategy scan: place ALL qualifying signals ─────────
                 MAX_POSITIONS = 5   # max simultaneous open positions
 
                 open_count = len(self.active_positions)
+                if open_count >= MAX_POSITIONS:
+                    self.display.alert(
+                        f"Max positions reached ({open_count}/{MAX_POSITIONS}) — "
+                        f"waiting {self.min_trade_interval//60}m for a slot to open...",
+                        "INFO"
+                    )
+                    await asyncio.sleep(self.min_trade_interval)
+                    continue
+
                 if open_count < MAX_POSITIONS:
                     from datetime import datetime, timezone as _tz
                     _utc_now = datetime.now(_tz.utc)
@@ -1892,10 +1951,10 @@ class OandaTradingEngine:
 
                     if cycle_limit == 0:
                         self.display.warning(
-                            "No qualifying signals (or no open slots) — "
-                            "skipping trade placement this cycle"
+                            f"No qualifying signals this cycle — "
+                            f"rescanning in {self.scan_fast_seconds}s..."
                         )
-                        await asyncio.sleep(self.min_trade_interval)
+                        await asyncio.sleep(self.scan_fast_seconds)
                         continue
 
                     # ── Place each selected trade ─────────────────────────
@@ -1926,10 +1985,22 @@ class OandaTradingEngine:
                     self.display.divider()
                     print()
                 
-                # Wait before next trade (M15 Charter compliance)
-                wait_minutes = self.min_trade_interval / 60
-                self.display.alert(f"Waiting {wait_minutes:.0f} minutes before next trade (M15 Charter)...", "INFO")
-                await asyncio.sleep(self.min_trade_interval)
+                # Fast rescan while slots remain; slow only when full.
+                open_count_now = len(self.active_positions)
+                if open_count_now >= MAX_POSITIONS:
+                    self.display.alert(
+                        f"Positions full ({open_count_now}/{MAX_POSITIONS}) — "
+                        f"waiting {self.scan_slow_seconds}s for next slot...",
+                        "INFO"
+                    )
+                    await asyncio.sleep(self.scan_slow_seconds)
+                else:
+                    self.display.alert(
+                        f"Slots open ({open_count_now}/{MAX_POSITIONS}) — "
+                        f"rescanning in {self.scan_fast_seconds}s...",
+                        "INFO"
+                    )
+                    await asyncio.sleep(self.scan_fast_seconds)
                 
             except KeyboardInterrupt:
                 self.display.warning("\nStopping trading engine...")
