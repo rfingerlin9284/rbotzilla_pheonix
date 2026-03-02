@@ -1,0 +1,71 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "▶ Start Bot (Paper)",
+      "type": "shell",
+      "command": "pkill -f oanda_trading_engine.py 2>/dev/null; sleep 1; cd /home/rfing/RBOTZILLA_PHOENIX && source venv/bin/activate && python oanda_trading_engine.py",
+      "group": { "kind": "build", "isDefault": true },
+      "presentation": { "reveal": "always", "panel": "new", "title": "RBotzilla Engine" },
+      "problemMatcher": []
+    },
+    {
+      "label": "⏹ Stop Bot",
+      "type": "shell",
+      "command": "pkill -f oanda_trading_engine.py && echo '✅ Bot stopped' || echo '⚠️ No bot running'",
+      "presentation": { "reveal": "always", "panel": "shared", "title": "RBotzilla Control" },
+      "problemMatcher": []
+    },
+    {
+      "label": "🔄 Restart Bot",
+      "type": "shell",
+      "command": "pkill -f oanda_trading_engine.py 2>/dev/null; sleep 2; cd /home/rfing/RBOTZILLA_PHOENIX && source venv/bin/activate && python oanda_trading_engine.py",
+      "presentation": { "reveal": "always", "panel": "new", "title": "RBotzilla Restart" },
+      "problemMatcher": []
+    },
+    {
+      "label": "📊 Status / Open Positions",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && source venv/bin/activate && python scripts/check_positions.py",
+      "presentation": { "reveal": "always", "panel": "shared", "title": "Positions" },
+      "problemMatcher": []
+    },
+    {
+      "label": "✅ Verify System",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && source venv/bin/activate && python verify_system_ready.py",
+      "presentation": { "reveal": "always", "panel": "shared", "title": "Verify" },
+      "problemMatcher": []
+    },
+    {
+      "label": "📡 Scan Log (live tail)",
+      "type": "shell",
+      "command": "tail -f /tmp/rbz.log | grep --line-buffered -E 'SCAN:|conf=|Placing|below_threshold|already_active|no_signal|SCALE_OUT|BREAKEVEN|TRAIL|FORCED_CLOSE|Synced'",
+      "presentation": { "reveal": "always", "panel": "shared", "title": "Scan Log" },
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "📜 Narration Log (live tail)",
+      "type": "shell",
+      "command": "tail -f /home/rfing/RBOTZILLA_PHOENIX/logs/narration.jsonl 2>/dev/null | python3 -u -c \"import sys,json\nfor line in sys.stdin:\n    try:\n        d=json.loads(line); ts=d.get('timestamp','')[:19]; evt=d.get('event_type',''); sym=d.get('symbol',''); det=str(d.get('details',''))[:140]\n        print(f'{ts}  {evt:30} {sym:10} {det}')\n    except: print(line.strip())\"",
+      "presentation": { "reveal": "always", "panel": "shared", "title": "Narration" },
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "🔒 Mode → Paper",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && python3 -c \"import json; f='configs/runtime_mode.json'; d=json.load(open(f)); d['mode']='PAPER'; json.dump(d,open(f,'w'),indent=2); print('Mode: PAPER')\"",
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": []
+    },
+    {
+      "label": "💾 Git Save",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && git add -A && git commit -m \"checkpoint: $(date '+%Y-%m-%d %H:%M')\"",
+      "presentation": { "reveal": "always", "panel": "shared", "title": "Git Save" },
+      "problemMatcher": []
+    }
+  ]
+}

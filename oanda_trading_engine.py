@@ -40,7 +40,7 @@ from util.narration_logger import log_narration, log_pnl
 from util.rick_narrator import RickNarrator
 from util.usd_converter import get_usd_notional
 from util.positions_registry import PositionsRegistry
-from systems.momentum_signals import generate_signal
+from systems.multi_signal_engine import scan_symbol, manage_open_trade, TradeAction, AggregatedSignal
 
 # Tight trailing stop + TP guard (dec4_dec10 reference: rbz_tight_trailing.py)
 try:
@@ -196,6 +196,14 @@ class OandaTradingEngine:
         # Confidence gate — reject signals below this threshold
         # Reference: PATCH_PROPOSAL MIN_CONFIDENCE = 0.55
         self.min_confidence = 0.55
+
+        # ── Multi-signal scan config (env-overridable) ────────────────────────
+        # min_signal_confidence: final selection gate (above min_confidence)
+        # max_new_trades_per_cycle: hard cap on new orders per loop iteration
+        # scan_log_top_n: how many candidates/rejects to print each cycle
+        self.min_signal_confidence  = float(os.getenv('RBOT_MIN_SIGNAL_CONFIDENCE',  '0.62'))
+        self.max_new_trades_per_cycle = int(os.getenv('RBOT_MAX_NEW_TRADES_PER_CYCLE', '3'))
+        self.scan_log_top_n         = int(os.getenv('RBOT_SCAN_LOG_TOP_N',           '8'))
         
         # IMMUTABLE RISK MANAGEMENT (Charter Section 3.2)
         self.min_notional_usd = self.charter.MIN_NOTIONAL_USD  # $15,000 minimum (Charter immutable)
@@ -747,7 +755,8 @@ class OandaTradingEngine:
             'reason': f'Low risk profile (margin: {margin_utilization:.1%}, notional: ${notional:,.0f})'
         }
     
-    def place_trade(self, symbol: str, direction: str):
+    def place_trade(self, symbol: str, direction: str,
+                   signal_sl: float = None, signal_tp: float = None):
         """Place Charter-compliant OCO order with full logging (environment-agnostic)"""
         try:
             # ========================================================================
@@ -893,8 +902,30 @@ class OandaTradingEngine:
                 price_data['spread'] / 0.0001  # Convert to pips
             )
             
-            # Calculate stops
-            stop_loss, take_profit = self.calculate_stop_take_levels(symbol, direction, entry_price)
+            # Calculate stops.
+            #
+            # Signal SL/TP are anchored to the candle-close price, not the live
+            # bid/ask.  If price drifted since the close the raw values would
+            # create a wrong distance (e.g. 1-pip SL) and fail the RR gate.
+            # Re-apply the *distance* from the signal to the live entry price,
+            # with the charter pip values as an absolute floor.
+            pip = 0.01 if 'JPY' in symbol else 0.0001
+            charter_sl_dist = self.stop_loss_pips   * pip   # e.g. 0.0010
+            charter_tp_dist = self.take_profit_pips * pip   # e.g. 0.0032
+
+            if signal_sl is not None and signal_tp is not None:
+                if direction == 'BUY':
+                    sl_dist = max(abs(entry_price - signal_sl), charter_sl_dist)
+                    tp_dist = max(abs(signal_tp   - entry_price), charter_tp_dist)
+                    stop_loss   = round(entry_price - sl_dist, 5)
+                    take_profit = round(entry_price + tp_dist, 5)
+                else:
+                    sl_dist = max(abs(signal_sl   - entry_price), charter_sl_dist)
+                    tp_dist = max(abs(entry_price - signal_tp),  charter_tp_dist)
+                    stop_loss   = round(entry_price + sl_dist, 5)
+                    take_profit = round(entry_price - tp_dist, 5)
+            else:
+                stop_loss, take_profit = self.calculate_stop_take_levels(symbol, direction, entry_price)
             
             # ========================================================================
             # 🛡️ VALIDATE TP/SL ARE SET (NEW - Per User Requirement)
@@ -1190,6 +1221,65 @@ class OandaTradingEngine:
         # This method can be extended to sync state with OANDA API if needed
         return
 
+    def _sync_open_positions(self):
+        """
+        Pull current open trades from OANDA and add any that are missing from
+        active_positions.  Called on startup AND at the top of each trade_manager
+        cycle so positions placed manually or before a restart are always tracked.
+        """
+        try:
+            trades = self.oanda.get_trades() or []
+        except Exception as e:
+            self.display.warning(f"_sync_open_positions: get_trades failed — {e}")
+            return
+
+        for t in trades:
+            symbol    = (t.get('instrument') or t.get('symbol', '')).upper()
+            trade_id  = str(t.get('id') or t.get('tradeID') or t.get('trade_id', ''))
+            if not trade_id or trade_id in self.active_positions:
+                continue
+
+            raw_units = float(t.get('currentUnits') or t.get('units') or 0)
+            direction = 'BUY' if raw_units > 0 else 'SELL'
+            entry     = float(t.get('price') or t.get('averagePrice') or 0)
+
+            # Try to read attached SL/TP orders from the trade object
+            sl_order  = t.get('stopLossOrder') or {}
+            tp_order  = t.get('takeProfitOrder') or {}
+            sl_price  = float(sl_order.get('price', 0))
+            tp_price  = float(tp_order.get('price', 0))
+
+            # Fallback: derive SL/TP from our config defaults
+            pip = 0.01 if 'JPY' in symbol else 0.0001
+            if sl_price == 0:
+                sl_price = (entry - self.stop_loss_pips * pip) if direction == 'BUY' \
+                           else (entry + self.stop_loss_pips * pip)
+            if tp_price == 0:
+                tp_price = (entry + self.take_profit_pips * pip) if direction == 'BUY' \
+                           else (entry - self.take_profit_pips * pip)
+
+            self.active_positions[trade_id] = {
+                'symbol':     symbol,
+                'direction':  direction,
+                'entry':      entry,
+                'stop_loss':  sl_price,
+                'take_profit': tp_price,
+                'units':      abs(raw_units),
+                'notional':   0,
+                'rr_ratio':   0,
+                'timestamp':  datetime.now(timezone.utc),
+                'signal_sl':  sl_price,
+                'signal_tp':  tp_price,
+                'scaled_out': False,
+                'trail_active': False,
+                'synced_from_broker': True,
+            }
+            self.active_pairs.add(symbol)
+            self.display.info(
+                f"🔄 Synced existing position: {symbol} {direction} entry={entry:.5f} "
+                f"SL={sl_price:.5f} TP={tp_price:.5f}", "", Colors.BRIGHT_CYAN
+            )
+
     async def trade_manager_loop(self):
         """Background loop that evaluates active positions and asks the Hive for momentum signals.
 
@@ -1226,6 +1316,10 @@ class OandaTradingEngine:
         
         while self.is_running:
             try:
+                # Re-sync broker positions each cycle so manually opened or
+                # restarted trades are always visible to the manager.
+                self._sync_open_positions()
+
                 now = datetime.now(timezone.utc)
                 for order_id, pos in list(self.active_positions.items()):
                     # Skip if already processed for TP cancellation
@@ -1240,6 +1334,8 @@ class OandaTradingEngine:
                     symbol = pos['symbol']
                     direction = pos['direction']
                     entry_price = pos['entry']
+                    pos_sl  = pos.get('stop_loss', 0)
+                    pos_tp  = pos.get('take_profit', 0)
 
                     # Get current price to calculate profit
                     try:
@@ -1251,6 +1347,114 @@ class OandaTradingEngine:
                         self.display.warning(f"Could not fetch current price for {symbol}: {e}")
                         continue
 
+                    # ── Incremental position management (multi_signal_engine) ──
+                    from systems.multi_signal_engine import manage_open_trade, TradeAction, session_bias
+                    sess_name, _ = session_bias(symbol)
+                    trade_action, trade_detail = manage_open_trade(
+                        direction    = direction,
+                        entry        = entry_price,
+                        sl           = pos_sl,
+                        tp           = pos_tp,
+                        current_price= current_price,
+                        symbol       = symbol,
+                        scaled_out   = pos.get('scaled_out', False),
+                        trail_active = pos.get('trail_active', False),
+                        session      = sess_name,
+                    )
+
+                    if trade_action == TradeAction.SCALE_OUT_HALF:
+                        self.display.alert(
+                            f"📉 SCALE_OUT_HALF {symbol} @ {current_price:.5f}  "
+                            f"(1R profit, closing 50%)", "INFO"
+                        )
+                        try:
+                            trades = self.oanda.get_trades()
+                            for t in trades:
+                                ti = (t.get('instrument') or t.get('symbol', '')).upper()
+                                if ti == symbol.upper():
+                                    tid = t.get('id') or t.get('tradeID') or t.get('trade_id')
+                                    units_now = int(abs(float(t.get('currentUnits', t.get('units', 0)))))
+                                    half = max(1, units_now // 2)
+                                    close_units = half if direction == 'BUY' else -half
+                                    self.oanda.close_trade_partial(tid, close_units)
+                                    pos['scaled_out'] = True
+                                    log_narration(
+                                        event_type="SCALE_OUT_HALF",
+                                        details={"symbol": symbol, "units_closed": half,
+                                                 "pnl_r": trade_detail.get('pnl_r')},
+                                        symbol=symbol, venue="trade_manager"
+                                    )
+                        except Exception as _se:
+                            self.display.warning(f"Scale-out error for {symbol}: {_se}")
+
+                    elif trade_action == TradeAction.MOVE_BE:
+                        new_sl = trade_detail.get('new_sl', entry_price)
+                        self.display.info(
+                            f"🔒 BREAKEVEN {symbol}  new SL → {new_sl:.5f}", "", Colors.BRIGHT_GREEN
+                        )
+                        try:
+                            trades = self.oanda.get_trades()
+                            for t in trades:
+                                ti = (t.get('instrument') or t.get('symbol', '')).upper()
+                                if ti == symbol.upper():
+                                    tid = t.get('id') or t.get('tradeID') or t.get('trade_id')
+                                    self.oanda.set_trade_stop(tid, new_sl)
+                                    pos['stop_loss'] = new_sl
+                                    log_narration(
+                                        event_type="SL_MOVED_BE",
+                                        details={"symbol": symbol, "new_sl": new_sl},
+                                        symbol=symbol, venue="trade_manager"
+                                    )
+                        except Exception as _be:
+                            self.display.warning(f"Breakeven SL error for {symbol}: {_be}")
+
+                    elif trade_action == TradeAction.TRAIL_TIGHT:
+                        new_sl = trade_detail.get('new_sl')
+                        self.display.success(
+                            f"🎯 TRAIL_TIGHT {symbol}  trail SL → {new_sl:.5f}  "
+                            f"(R={trade_detail.get('pnl_r', 0):.2f})"
+                        )
+                        try:
+                            trades = self.oanda.get_trades()
+                            for t in trades:
+                                ti = (t.get('instrument') or t.get('symbol', '')).upper()
+                                if ti == symbol.upper():
+                                    tid = t.get('id') or t.get('tradeID') or t.get('trade_id')
+                                    self.oanda.set_trade_stop(tid, new_sl)
+                                    pos['stop_loss']   = new_sl
+                                    pos['trail_active'] = True
+                                    log_narration(
+                                        event_type="TRAIL_TIGHT_SET",
+                                        details={"symbol": symbol, "new_sl": new_sl,
+                                                 "pnl_r": trade_detail.get('pnl_r')},
+                                        symbol=symbol, venue="trade_manager"
+                                    )
+                        except Exception as _te:
+                            self.display.warning(f"Trail-tight SL error for {symbol}: {_te}")
+
+                    elif trade_action == TradeAction.CLOSE_ALL:
+                        reason = trade_detail.get('reason', 'engine')
+                        self.display.alert(
+                            f"🚪 CLOSE_ALL {symbol} reason={reason}  "
+                            f"price={current_price:.5f}", "WARNING"
+                        )
+                        try:
+                            trades = self.oanda.get_trades()
+                            for t in trades:
+                                ti = (t.get('instrument') or t.get('symbol', '')).upper()
+                                if ti == symbol.upper():
+                                    tid = t.get('id') or t.get('tradeID') or t.get('trade_id')
+                                    self.oanda.close_trade(tid)
+                                    log_narration(
+                                        event_type="FORCED_CLOSE",
+                                        details={"symbol": symbol, "reason": reason,
+                                                 "pnl_r": trade_detail.get('pnl_r')},
+                                        symbol=symbol, venue="trade_manager"
+                                    )
+                        except Exception as _ce:
+                            self.display.warning(f"Force-close error for {symbol}: {_ce}")
+
+                    # ── Legacy hive/momentum checks (continue after incremental mgmt) ──
                     # Calculate profit in pips and ATR multiples
                     pip_size = 0.0001 if 'JPY' not in symbol else 0.01
                     if direction == 'BUY':
@@ -1539,6 +1743,9 @@ class OandaTradingEngine:
         last_police_sweep = time.time()  # Track last Position Police sweep
         police_sweep_interval = 900  # 15 minutes (M15 charter compliance)
         
+        # Sync any trades already open on the broker before the manager starts
+        self._sync_open_positions()
+
         # Start TradeManager background task
         trade_manager_task = asyncio.create_task(self.trade_manager_loop())
         
@@ -1558,48 +1765,164 @@ class OandaTradingEngine:
                 # Check existing positions
                 self.check_positions()
                 
-                # Place new trade if capacity allows (max 12 from PATCH_PROPOSAL)
-                if len(self.active_positions) < 12:
-                    # Scan 5 focused majors — pick first pair that exceeds confidence threshold
-                    symbol = None
-                    direction = None
-                    sig_meta = {}
+                # ── Multi-strategy scan: place ALL qualifying signals ─────────
+                MAX_POSITIONS = 5   # max simultaneous open positions
+
+                open_count = len(self.active_positions)
+                if open_count < MAX_POSITIONS:
+                    from datetime import datetime, timezone as _tz
+                    _utc_now = datetime.now(_tz.utc)
+
+                    # Symbols already open on broker OR tracked locally
+                    held_on_broker = set(
+                        (t.get('instrument') or t.get('symbol', '')).upper()
+                        for t in (self.oanda.get_trades() or [])
+                    )
+                    active_symbols = {
+                        pos['symbol'].upper()
+                        for pos in self.active_positions.values()
+                        if 'symbol' in pos
+                    }
+                    blocked_symbols = held_on_broker | active_symbols
+
+                    qualified: list[AggregatedSignal] = []
+                    rejected:  list[dict]             = []
+
                     for _candidate in self.trading_pairs:
-                        # Skip if already holding this pair
-                        if any((t.get('instrument') or t.get('symbol')) == _candidate
-                               for t in (self.oanda.get_trades() or [])):
+                        _cu = _candidate.upper()
+                        # ── already active ───────────────────────────────
+                        if _cu in blocked_symbols:
+                            rejected.append({'symbol': _candidate,
+                                             'reason': 'already_active_symbol',
+                                             'conf': None, 'dir': None})
                             continue
+                        # ── fetch candles + run all detectors ───────────
                         try:
-                            candles = self.oanda.get_historical_data(_candidate, count=120, granularity="M15")
-                            sig, conf, meta = generate_signal(_candidate, candles)  # 3-tuple
-                        except Exception as e:
-                            self.display.error(f"Signal error for {_candidate}: {e}")
+                            candles = self.oanda.get_historical_data(
+                                _candidate, count=150, granularity="M15"
+                            )
+                            agg = scan_symbol(
+                                _candidate, candles,
+                                utc_now=_utc_now,
+                                min_confidence=self.min_confidence,  # 0.55 vote floor
+                                min_votes=2,
+                            )
+                        except Exception as _scan_err:
+                            rejected.append({'symbol': _candidate,
+                                             'reason': 'error_in_scan',
+                                             'conf': None, 'dir': None,
+                                             'detail': str(_scan_err)})
                             continue
-                        if sig in ("BUY", "SELL") and conf >= self.min_confidence:
-                            symbol = _candidate
-                            direction = sig
-                            sig_meta = meta
-                            self.display.success(
-                                f"✓ Signal: {symbol} {direction} "
-                                f"(conf: {conf:.1%} ≥ {self.min_confidence:.0%}) "
-                                f"| {meta.get('reason', '')}"
-                            )
-                            break
-                        elif sig in ("BUY", "SELL"):
-                            self.display.warning(
-                                f"  {_candidate} {sig} conf {conf:.1%} < {self.min_confidence:.0%} — REJECTED"
-                            )
-                    
-                    if not symbol or not direction:
-                        self.display.warning("No qualifying signals (all below confidence gate) — skipping cycle")
+
+                        # ── not enough consensus ─────────────────────────
+                        if agg is None:
+                            rejected.append({'symbol': _candidate,
+                                             'reason': 'no_signal',
+                                             'conf': None, 'dir': None})
+                            continue
+
+                        # ── confidence gate (selection threshold) ────────
+                        if agg.confidence < self.min_signal_confidence:
+                            rejected.append({'symbol': _candidate,
+                                             'reason': 'confidence_below_threshold',
+                                             'conf': agg.confidence,
+                                             'dir':  agg.direction,
+                                             'threshold': self.min_signal_confidence})
+                            continue
+
+                        # ── passed — queue it ─────────────────────────────
+                        qualified.append(agg)
+
+                    # Sort best-edge first
+                    qualified.sort(key=lambda x: x.confidence, reverse=True)
+
+                    slots_left  = MAX_POSITIONS - open_count
+                    cycle_limit = min(slots_left, self.max_new_trades_per_cycle,
+                                      len(qualified))
+
+                    # ── SIGNAL_SCAN_RESULTS log (terminal + narration) ───
+                    N = self.scan_log_top_n
+                    scan_summary = {
+                        'pairs_scanned':    len(self.trading_pairs),
+                        'candidates_passed': len(qualified),
+                        'open_slots':       slots_left,
+                        'placing':          cycle_limit,
+                        'min_conf_gate':    self.min_signal_confidence,
+                        'top_candidates':   [
+                            {'symbol': a.symbol, 'dir': a.direction,
+                             'conf': round(a.confidence, 4),
+                             'votes': a.votes,
+                             'detectors': a.detectors_fired,
+                             'session': a.session, 'rr': round(a.rr, 2)}
+                            for a in qualified[:N]
+                        ],
+                        'top_rejected': [
+                            {'symbol': r['symbol'], 'reason': r['reason'],
+                             'conf': r.get('conf'), 'dir': r.get('dir')}
+                            for r in rejected[:N]
+                        ],
+                    }
+                    log_narration(
+                        event_type="SIGNAL_SCAN_RESULTS",
+                        details=scan_summary,
+                        symbol="SYSTEM",
+                        venue="signal_scan",
+                    )
+
+                    # Terminal summary
+                    self.display.section(
+                        f"📡 SCAN: {len(self.trading_pairs)} pairs "
+                        f"| ✅ {len(qualified)} passed "
+                        f"| ❌ {len(rejected)} rejected "
+                        f"| 🎯 placing {cycle_limit}"
+                    )
+                    for a in qualified[:N]:
+                        self.display.success(
+                            f"  ✅ {a.symbol:10} {a.direction:4} "
+                            f"conf={a.confidence:.1%}  votes={a.votes}  "
+                            f"det={','.join(a.detectors_fired)}  "
+                            f"sess={a.session}  RR={a.rr:.2f}"
+                        )
+                    for r in rejected[:N]:
+                        conf_str = f"{r['conf']:.1%}" if r['conf'] else 'n/a'
+                        self.display.warning(
+                            f"  ❌ {r['symbol']:10} {str(r.get('dir') or ''):4} "
+                            f"conf={conf_str:6}  → {r['reason']}"
+                        )
+
+                    if cycle_limit == 0:
+                        self.display.warning(
+                            "No qualifying signals (or no open slots) — "
+                            "skipping trade placement this cycle"
+                        )
                         await asyncio.sleep(self.min_trade_interval)
                         continue
-                    
-                    trade_id = self.place_trade(symbol, direction)
-                    
-                    if trade_id:
-                        trade_count += 1
-                    
+
+                    # ── Place each selected trade ─────────────────────────
+                    for agg in qualified[:cycle_limit]:
+                        self.display.success(
+                            f"→ Placing {agg.symbol} {agg.direction} "
+                            f"conf={agg.confidence:.1%}  "
+                            f"({agg.votes} votes: {','.join(agg.detectors_fired)})"
+                        )
+                        trade_id = self.place_trade(
+                            agg.symbol, agg.direction,
+                            signal_sl=agg.sl,
+                            signal_tp=agg.tp,
+                        )
+                        if trade_id:
+                            if trade_id in self.active_positions:
+                                self.active_positions[trade_id].update({
+                                    'signal_sl':        agg.sl,
+                                    'signal_tp':        agg.tp,
+                                    'signal_votes':     agg.votes,
+                                    'signal_detectors': agg.detectors_fired,
+                                    'session':          agg.session,
+                                    'scaled_out':       False,
+                                    'trail_active':     False,
+                                })
+                            trade_count += 1
+
                     self.display.divider()
                     print()
                 

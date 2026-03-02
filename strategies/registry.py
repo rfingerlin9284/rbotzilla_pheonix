@@ -1,149 +1,115 @@
+"""
+Strategy Registry — single source of truth for all active strategies.
+Each entry wires a StrategyMetadata + class together.
+Import `STRATEGY_REGISTRY` to get all live strategies.
+"""
 from __future__ import annotations
-from typing import Dict, List, Type, Optional
-import logging
+from typing import List
 
-from .base import StrategyMetadata, BaseStrategy
+from .base import BaseStrategy, StrategyMetadata
 
-# Import concrete strategies here
-from .institutional_sd import InstitutionalSupplyDemandStrategy
-from .liquidity_sweep import LiquiditySweepReversalStrategy
-from .trap_reversal_scalper import TrapReversalScalperStrategy
-from .price_action_holy_grail import PriceActionHolyGrailStrategy
-from .fib_confluence_breakout import FibConfluenceBreakoutStrategy
-try:
-    from .crypto_breakout import CryptoBreakoutStrategy
-    from .event_straddle import EventStraddleStrategy
-except ImportError as e:
-    # In case optional strategies are added later or imports fail, we can still build registry
-    logging.warning("Optional strategy import failed: %s", e)
-    CryptoBreakoutStrategy: Optional[Type[BaseStrategy]] = None
-    EventStraddleStrategy: Optional[Type[BaseStrategy]] = None
+from .liquidity_sweep          import LiquiditySweepReversalStrategy
+from .trap_reversal_scalper    import TrapReversalScalperStrategy
+from .fib_confluence_breakout  import FibConfluenceBreakoutStrategy
+from .price_action_holy_grail  import PriceActionHolyGrailStrategy
+from .institutional_sd         import InstitutionalSupplyDemandStrategy
+from .bullish_wolf              import BullishWolf
+from .bearish_wolf              import BearishWolf
+from .sideways_wolf             import SidewaysWolf
+from .crypto_breakout          import CryptoBreakoutStrategy
 
 
-# --- Metadata definitions ----------------------------------------------------
-
-INSTITUTIONAL_SD_META = StrategyMetadata(
-    name="Institutional Supply & Demand Zones",
-    code="INST_SD",
-    priority="gold",
-    markets=["FX", "CRYPTO", "FUTURES"],
-    base_timeframes=["M15", "H1"],
-    max_hold_minutes=4 * 60,
-    target_rr=3.0,
-    est_win_rate=0.70,
-)
-
-LIQ_SWEEP_META = StrategyMetadata(
-    name="Liquidity Sweep + Zone Reversal",
-    code="LIQ_SWEEP",
-    priority="gold",
-    markets=["FX", "CRYPTO", "FUTURES", "STOCKS"],
-    base_timeframes=["M15", "H1"],
-    max_hold_minutes=4 * 60,
-    target_rr=3.7,
-    est_win_rate=0.63,
-)
-
-CRYPTO_BREAK_META = StrategyMetadata(
-    name="Crypto Breakout",
-    code="CRYPTO_BREAK",
-    priority="silver",
-    markets=["CRYPTO"],
-    base_timeframes=["M15", "H1"],
-    max_hold_minutes=60,
-    target_rr=2.0,
-    est_win_rate=0.55,
-)
-
-EVENT_STRADDLE_META = StrategyMetadata(
-    name="Event Straddle",
-    code="EVT_STRAD",
-    priority="silver",
-    markets=["FX", "CRYPTO"],
-    base_timeframes=["M15", "H1"],
-    max_hold_minutes=30,
-    target_rr=2.0,
-    est_win_rate=0.50,
-)
-
-TRAP_REVERSAL_META = StrategyMetadata(
-    name="Trap Reversal Scalper",
-    code="TRAP_REV",
-    priority="gold",
-    markets=["FX", "CRYPTO", "FUTURES"],
-    base_timeframes=["M1", "M5"],
-    max_hold_minutes=10,
-    target_rr=1.2,
-    est_win_rate=0.75,
-)
-
-PA_HOLY_GRAIL_META = StrategyMetadata(
-    name="Price Action Holy Grail",
-    code="PA_HG",
-    priority="gold",
-    markets=["FX", "CRYPTO", "FUTURES"],
-    base_timeframes=["M15", "H1"],
-    max_hold_minutes=240,
-    target_rr=2.3,
-    est_win_rate=0.76,
-)
-
-FIB_CONFLUENCE_META = StrategyMetadata(
-    name="Fib Confluence Breakout",
-    code="FIB_CONF",
-    priority="gold",
-    markets=["FX", "CRYPTO"],
-    base_timeframes=["M15", "H1"],
-    max_hold_minutes=210,
-    target_rr=2.5,
-    est_win_rate=0.68,
-)
+def _fx(code, name, priority, tfs, max_hold, rr, wr) -> StrategyMetadata:
+    return StrategyMetadata(
+        name=name, code=code, priority=priority,
+        markets=["FX"], base_timeframes=tfs,
+        max_hold_minutes=max_hold, target_rr=rr, est_win_rate=wr,
+    )
 
 
-# --- Registry ----------------------------------------------------------------
+_DEFS: List[tuple[StrategyMetadata, type]] = [
+    # ── Tier 1 — gold: highest edge, institutional alignment ─────────────────
+    (
+        _fx("INST_SD",   "Institutional Supply & Demand",  "gold",
+            ["M15","H1"], 240, 3.5, 0.58),
+        InstitutionalSupplyDemandStrategy,
+    ),
+    (
+        _fx("LIQ_SWEEP", "Liquidity Sweep Reversal",       "gold",
+            ["M5","M15"], 120, 3.2, 0.56),
+        LiquiditySweepReversalStrategy,
+    ),
+    (
+        _fx("TRAP_REV",  "Trap Reversal Scalper",          "gold",
+            ["M5","M15"], 90,  3.2, 0.55),
+        TrapReversalScalperStrategy,
+    ),
+    (
+        _fx("HOLY_GRAIL","Price Action Holy Grail",        "gold",
+            ["M15","H1"], 180, 3.0, 0.54),
+        PriceActionHolyGrailStrategy,
+    ),
 
-def get_all_strategy_classes() -> Dict[str, Type[BaseStrategy]]:
-    """
-    Returns a mapping from strategy code to class.
-    """
-    mapping: Dict[str, Type[BaseStrategy]] = {
-        INSTITUTIONAL_SD_META.code: InstitutionalSupplyDemandStrategy,
-        LIQ_SWEEP_META.code: LiquiditySweepReversalStrategy,
-        TRAP_REVERSAL_META.code: TrapReversalScalperStrategy,
-        PA_HOLY_GRAIL_META.code: PriceActionHolyGrailStrategy,
-        FIB_CONFLUENCE_META.code: FibConfluenceBreakoutStrategy,
-    }
-    if CryptoBreakoutStrategy is not None:
-        mapping[CRYPTO_BREAK_META.code] = CryptoBreakoutStrategy  # type: ignore
-    if EventStraddleStrategy is not None:
-        mapping[EVENT_STRADDLE_META.code] = EventStraddleStrategy  # type: ignore
-    return mapping
+    # ── Tier 2 — silver: good edge, slightly noisier ─────────────────────────
+    (
+        _fx("FIB_BRK",   "Fibonacci Confluence Breakout",  "silver",
+            ["M15","H1"], 240, 3.5, 0.52),
+        FibConfluenceBreakoutStrategy,
+    ),
+    (
+        StrategyMetadata(
+            name="Crypto / Vol Breakout", code="CRYPTO_BRK", priority="silver",
+            markets=["FX","CRYPTO"], base_timeframes=["M15","H1"],
+            max_hold_minutes=180, target_rr=3.2, est_win_rate=0.50,
+        ),
+        CryptoBreakoutStrategy,
+    ),
+
+    # ── Tier 3 — bronze: regime-specific wolves (BullishWolf / BearishWolf use
+    #    their own pandas-based logic; wrap them to fit BaseStrategy interface) ─
+]
 
 
-def get_strategy_metadata() -> Dict[str, StrategyMetadata]:
-    """
-    Returns metadata keyed by strategy code.
-    """
-    return {
-        INSTITUTIONAL_SD_META.code: INSTITUTIONAL_SD_META,
-        LIQ_SWEEP_META.code: LIQ_SWEEP_META,
-        CRYPTO_BREAK_META.code: CRYPTO_BREAK_META,
-        EVENT_STRADDLE_META.code: EVENT_STRADDLE_META,
-        TRAP_REVERSAL_META.code: TRAP_REVERSAL_META,
-        PA_HOLY_GRAIL_META.code: PA_HOLY_GRAIL_META,
-        FIB_CONFLUENCE_META.code: FIB_CONFLUENCE_META,
-    }
+def _wolf_wrapper(wolf_cls, code, name, priority, tfs, rr, wr) -> tuple:
+    """Thin adapter: BullishWolf / BearishWolf don't extend BaseStrategy."""
+    meta = _fx(code, name, priority, tfs, 120, rr, wr)
+    # Return None class — these are invoked separately via wolf_pack_runner
+    return (meta, None, wolf_cls)
 
 
-def build_active_strategies() -> List[BaseStrategy]:
-    """
-    Helper to instantiate all active strategies with their metadata.
-    Engine can call this once at startup.
-    """
-    classes = get_all_strategy_classes()
-    meta = get_strategy_metadata()
-    instances: List[BaseStrategy] = []
-    for code, cls in classes.items():
-        m = meta[code]
-        instances.append(cls(metadata=m))
-    return instances
+WOLF_PACK = [
+    _wolf_wrapper(BullishWolf,  "BULL_WOLF", "Bullish Wolf Pack",  "bronze", ["M15","H1"], 3.0, 0.50),
+    _wolf_wrapper(BearishWolf,  "BEAR_WOLF", "Bearish Wolf Pack",  "bronze", ["M15","H1"], 3.0, 0.50),
+    _wolf_wrapper(SidewaysWolf, "SIDE_WOLF", "Sideways Wolf Pack", "bronze", ["M15","H1"], 2.5, 0.48),
+]
+
+# Main registry: (metadata, instantiated_strategy) pairs
+STRATEGY_REGISTRY: List[tuple[StrategyMetadata, BaseStrategy]] = []
+for _meta, _cls in _DEFS:
+    try:
+        STRATEGY_REGISTRY.append((_meta, _cls(_meta)))
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Failed to init strategy {_meta.code}: {e}")
+
+
+def get_strategies_for_timeframe(tf: str) -> List[tuple[StrategyMetadata, BaseStrategy]]:
+    return [(m, s) for m, s in STRATEGY_REGISTRY if tf in m.base_timeframes]
+
+
+def get_gold_tier() -> List[tuple[StrategyMetadata, BaseStrategy]]:
+    return [(m, s) for m, s in STRATEGY_REGISTRY if m.priority == "gold"]
+
+
+def describe() -> None:
+    print(f"\n{'CODE':12} {'PRIORITY':8} {'TFs':15} {'RR':5} {'WIN%':6} {'NAME'}")
+    print("-" * 75)
+    for m, _ in STRATEGY_REGISTRY:
+        tfs = ",".join(m.base_timeframes)
+        print(f"{m.code:12} {m.priority:8} {tfs:15} {m.target_rr:<5.1f} "
+              f"{m.est_win_rate*100:<6.0f} {m.name}")
+    print()
+
+
+if __name__ == "__main__":
+    describe()
