@@ -1,0 +1,14 @@
+[
+{"section": "historical_data", "total_csv_files": 87, "simulation_files": 96}
+{"section": "strategies", "total": 5, "active": 5, "strategies": [, "Trap Reversal Scalper", "Fibonacci Confluence", "Price Action Holy Grail", "Liquidity Sweep", "EMA Crossover Scalper"]}
+{"section": "safety_systems", "total": 10, "active": 10}
+{"section": "latency", "components_checked": 4, "status": "baseline_established"}
+{"section": "ml_functionality", "components": 4, "retraining": "configured", "reinforcement": "configured"}
+{"section": "crash_handling", "error_handlers": 235, "logging_statements": 0, "health_monitoring": true}
+{"section": "narration", "capabilities": ["JSON parsing", "plain-English formatting", "real-time streaming"]}
+{"section": "smart_logic", "total": 6, "active": 6}
+{"section": "oco_orders", "files": 124, "status": "active"}
+{"section": "hive_mind_ml", "hive_components": 3, "adaptive_leverage": true}
+{"section": "memory_management", "py_files": 18533, "cache_management": true}
+{"section": "hunter_killer_mode", "status": "ready", "triggers": 115}
+]

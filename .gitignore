@@ -1,0 +1,49 @@
+# Ignore local environment files containing secrets
+.env
+env_new.env
+.env.*
+.state/
+
+# Ignore Python virtualenv
+.venv/
+venv/
+*/venv/
+**/venv/
+venv_coinbase/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+
+# Logs
+logs/
+
+# Local status/exports/backups
+status/
+export/
+archives/
+_CONSOLIDATION_BACKUP_*/
+
+# Misc large or local files
+*.zip
+rick_clean_live/
+sent_to_windows_files_and_folders/
+
+# Large source archive snapshots
+_source_repos/
+
+# Backup files
+backups/
+*.bak
+
+# Lock files
+*.locks
+
+# SQLite databases (runtime learning state)
+*.db
+
+# master.env (secrets)
+master.env
+
+# ops secrets (real credentials)
+ops/secrets.env
