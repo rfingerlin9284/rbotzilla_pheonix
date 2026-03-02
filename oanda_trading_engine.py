@@ -42,6 +42,14 @@ from util.usd_converter import get_usd_notional
 from util.positions_registry import PositionsRegistry
 from systems.momentum_signals import generate_signal
 
+# Tight trailing stop + TP guard (dec4_dec10 reference: rbz_tight_trailing.py)
+try:
+    from rbz_tight_trailing import apply_rbz_overrides, tp_guard, policy_for, TightSL
+    RBZ_TRAILING_AVAILABLE = True
+except ImportError:
+    RBZ_TRAILING_AVAILABLE = False
+    print("⚠️  rbz_tight_trailing not available - using legacy trailing")
+
 # ML Intelligence imports
 try:
     from ml_learning.regime_detector import RegimeDetector
@@ -177,25 +185,25 @@ class OandaTradingEngine:
         self.pending_orders = []      # Track pending orders for gate monitoring
         self.display.success("🛡️  Margin & Correlation Guardian Gates ACTIVE")
         
-        # ALL AVAILABLE OANDA FOREX PAIRS (from env_new.env)
-        # Major USD pairs + Major crosses + Commodity currencies
+        # Focused 5 major pairs (highest liquidity, tightest spreads)
+        # Reference: oanda_trading_engine.PATCH_PROPOSAL.py (dec4_dec10)
         self.trading_pairs = [
-            # Major USD pairs (highest liquidity)
-            'EUR_USD', 'GBP_USD', 'USD_JPY', 'USD_CHF', 'AUD_USD', 'USD_CAD', 'NZD_USD',
-            # Major crosses (no USD)
-            'EUR_GBP', 'EUR_JPY', 'GBP_JPY', 'AUD_JPY', 'CHF_JPY',
-            # European crosses
-            'EUR_CHF', 'GBP_CHF',
-            # Commodity currency crosses
-            'AUD_CHF', 'NZD_CHF', 'EUR_AUD', 'GBP_AUD'
+            'EUR_USD', 'GBP_USD', 'USD_JPY', 'AUD_USD', 'USD_CAD',
         ]
         
-        self.min_trade_interval = 300  # 5 minutes (MICRO TRADING DISABLED - Minimum 5min enforced)
+        self.min_trade_interval = 300  # 5 minutes minimum (M15 Charter floor)
+        
+        # Confidence gate — reject signals below this threshold
+        # Reference: PATCH_PROPOSAL MIN_CONFIDENCE = 0.55
+        self.min_confidence = 0.55
         
         # IMMUTABLE RISK MANAGEMENT (Charter Section 3.2)
         self.min_notional_usd = self.charter.MIN_NOTIONAL_USD  # $15,000 minimum (Charter immutable)
-        self.stop_loss_pips = 20
-        self.take_profit_pips = 64  # 3.2:1 R:R ratio (Charter minimum)
+        # Tight SL/TP from rbz reference: 10 pip SL, 32 pip TP (3.2:1)
+        self.stop_loss_pips = 10
+        self.take_profit_pips = 32  # 3.2:1 R:R ratio (Charter minimum)
+        self.trailing_start_pips = 3   # Begin trailing after 3 pip profit
+        self.trailing_dist_pips  = 5   # Trail at 5 pips distance
         self.min_rr_ratio = self.charter.MIN_RISK_REWARD_RATIO  # 3.2
         self.max_daily_loss = abs(self.charter.DAILY_LOSS_BREAKER_PCT)  # 5%
         
@@ -224,6 +232,14 @@ class OandaTradingEngine:
         self.hive_trigger_confidence = 0.80
         self.trade_manager_active = False  # Track if trade manager is running
         self.trade_manager_last_heartbeat = None  # Last time trade manager was active
+
+        # Wire tight trailing overrides (rbz_tight_trailing.py reference)
+        if RBZ_TRAILING_AVAILABLE:
+            try:
+                apply_rbz_overrides(connector=self.oanda, engine=self)
+                self.display.success("✅ RBZ tight trailing + TP guard wired")
+            except Exception as _rbz_err:
+                self.display.warning(f"⚠️  RBZ trailing wire failed: {_rbz_err}")
         
         # Narration logging
         log_narration(
@@ -1542,26 +1558,40 @@ class OandaTradingEngine:
                 # Check existing positions
                 self.check_positions()
                 
-                # Place new trade if we have less than 3 active positions
-                if len(self.active_positions) < 3:
-                    # Deterministic signal scan across configured pairs
+                # Place new trade if capacity allows (max 12 from PATCH_PROPOSAL)
+                if len(self.active_positions) < 12:
+                    # Scan 5 focused majors — pick first pair that exceeds confidence threshold
                     symbol = None
                     direction = None
+                    sig_meta = {}
                     for _candidate in self.trading_pairs:
+                        # Skip if already holding this pair
+                        if any((t.get('instrument') or t.get('symbol')) == _candidate
+                               for t in (self.oanda.get_trades() or [])):
+                            continue
                         try:
                             candles = self.oanda.get_historical_data(_candidate, count=120, granularity="M15")
-                            sig, conf = generate_signal(_candidate, candles)  # returns ("BUY"/"SELL", confidence) or (None, 0)
+                            sig, conf, meta = generate_signal(_candidate, candles)  # 3-tuple
                         except Exception as e:
                             self.display.error(f"Signal error for {_candidate}: {e}")
                             continue
-                        if sig in ("BUY","SELL"):
+                        if sig in ("BUY", "SELL") and conf >= self.min_confidence:
                             symbol = _candidate
                             direction = sig
-                            self.display.success(f"✓ Signal: {symbol} {direction} (confidence: {conf:.1%})")
+                            sig_meta = meta
+                            self.display.success(
+                                f"✓ Signal: {symbol} {direction} "
+                                f"(conf: {conf:.1%} ≥ {self.min_confidence:.0%}) "
+                                f"| {meta.get('reason', '')}"
+                            )
                             break
+                        elif sig in ("BUY", "SELL"):
+                            self.display.warning(
+                                f"  {_candidate} {sig} conf {conf:.1%} < {self.min_confidence:.0%} — REJECTED"
+                            )
                     
                     if not symbol or not direction:
-                        self.display.warning("No valid signals across pairs - skipping cycle")
+                        self.display.warning("No qualifying signals (all below confidence gate) — skipping cycle")
                         await asyncio.sleep(self.min_trade_interval)
                         continue
                     

@@ -38,20 +38,22 @@ def generate_signal(symbol, candles):
     closes = [x for x in closes if x > 0][-100:]  # Last 100 valid closes
     
     if len(closes) < 30:
-        return (None, 0.0)
+        return (None, 0.0, {})
     
     # Calculate indicators
     s20 = _sma(closes, 20)
     s50 = _sma(closes, 50)
     m10 = _mom(closes, 10)
     
+    meta = {"sma20": round(s20, 5), "sma50": round(s50, 5), "momentum10": round(m10, 4)}
+    
     # Trend + momentum confirmation
     if s20 > s50 and m10 > 0.15:  # Bullish trend + positive momentum
-        confidence = min(abs(m10)/2, 1.0)
-        return ("BUY", confidence)
+        confidence = min(abs(m10) / 2, 1.0)
+        return ("BUY", confidence, {**meta, "reason": "SMA20>SMA50 + positive momentum"})
     
     if s20 < s50 and m10 < -0.15:  # Bearish trend + negative momentum
-        confidence = min(abs(m10)/2, 1.0)
-        return ("SELL", confidence)
+        confidence = min(abs(m10) / 2, 1.0)
+        return ("SELL", confidence, {**meta, "reason": "SMA20<SMA50 + negative momentum"})
     
-    return (None, 0.0)
+    return (None, 0.0, {**meta, "reason": "no_edge"})
