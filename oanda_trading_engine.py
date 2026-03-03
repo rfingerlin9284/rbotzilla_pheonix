@@ -2127,7 +2127,7 @@ async def main():
     # Confirm LIVE mode with user
     if args.env == 'live':
         if args.yes_live:
-            print("\n✅ LIVE startup confirmed via --yes-live. Initializing engine...\n")
+            print("\n✅ LIVE startup confirmed via --yes-live. Running full startup sequence...\n")
         else:
             print("\n" + "="*60)
             print("⚠️  LIVE TRADING MODE - REAL MONEY AT RISK ⚠️")
@@ -2136,8 +2136,21 @@ async def main():
             if confirm != 'CONFIRM LIVE':
                 print("Live trading cancelled.")
                 return
-            print("\n✅ Live trading confirmed. Initializing engine...\n")
+            print("\n✅ Live trading confirmed. Running full startup sequence...\n")
     
+    # ══════════════════════════════════════════════════════════════════════════
+    # NEW: COMPREHENSIVE STARTUP SEQUENCE WITH DETAILED CONFIRMATIONS
+    # ══════════════════════════════════════════════════════════════════════════
+    try:
+        from startup_sequence import run_startup
+        startup_result = run_startup(environment=args.env)
+        # startup_result contains all confirmations and background bot statuses
+    except ImportError:
+        print("⚠️  Enhanced startup sequence not available, using basic initialization")
+    except Exception as e:
+        print(f"⚠️  Startup sequence error: {e}, continuing with basic initialization")
+    
+    print("\n🚀 Initializing trading engine...\n")
     engine = OandaTradingEngine(environment=args.env)
     await engine.run_trading_loop()
 
