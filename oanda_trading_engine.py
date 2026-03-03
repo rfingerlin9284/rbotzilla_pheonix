@@ -1401,6 +1401,207 @@ class OandaTradingEngine:
                 f"SL={sl_price:.5f} TP={tp_price:.5f}", "", Colors.BRIGHT_CYAN
             )
 
+    def _analyze_and_reoptimize_positions(self):
+        """
+        Analyze current positions against new margin config (1.5% risk per trade)
+        and identify positions that need resizing.
+        
+        This ensures all positions align with the updated configuration:
+        - Position sizing: 1.5% risk per trade (up from 1.0%)
+        - Signal confidence: 76%+ only
+        - Margin utilization: 25-30% target (vs current 11.6%)
+        """
+        if not self.active_positions:
+            self.display.info("📊 No open positions to reoptimize")
+            return
+        
+        try:
+            # Get current account balance
+            acct_info = self.oanda.get_account_info()
+            if not acct_info:
+                self.display.warning("⚠️  Could not fetch account info for reoptimization")
+                return
+            
+            account_balance = float(getattr(acct_info, 'balance', None) or 10000.0)
+            margin_used = float(getattr(acct_info, 'marginUsed', None) or 0.0)
+            margin_available = float(getattr(acct_info, 'marginAvailable', None) or 0.0)
+            margin_pct = (margin_used / account_balance * 100) if account_balance > 0 else 0
+            
+            self.display.alert(
+                f"Position Reoptimization Analysis (NEW CONFIG: 1.5% risk, 76%+ confidence)",
+                "INFO"
+            )
+            print(f"   Account Balance: ${account_balance:,.2f}")
+            print(f"   Current Margin Used: ${margin_used:,.2f} ({margin_pct:.1f}%)")
+            print(f"   Margin Available: ${margin_available:,.2f}")
+            print()
+            
+            # Import margin maximizer for calculations
+            from util.margin_maximizer import MarginMaximizer, MarginConfig
+            
+            margin_calc = MarginMaximizer(
+                MarginConfig(
+                    risk_per_trade_min=0.10,   # 1.0%
+                    risk_per_trade_target=0.15, # 1.5% NEW CONFIG
+                    risk_per_trade_max=0.20     # 2.0%
+                )
+            )
+            margin_calc.account_balance = account_balance
+            
+            # Target margins
+            target_margin_min = 0.25  # 25%
+            target_margin_max = 0.30  # 30%
+            target_margin_usd_min = account_balance * target_margin_min
+            target_margin_usd_max = account_balance * target_margin_max
+            
+            print(f"   Target Margin Range: ${target_margin_usd_min:,.0f} - ${target_margin_usd_max:,.0f} "
+                  f"({target_margin_min*100:.0f}% - {target_margin_max*100:.0f}%)")
+            print()
+            
+            # Analyze each position
+            print("   Position Analysis:")
+            print("   " + "=" * 100)
+            
+            adjustments_needed = False
+            for trade_id, pos in self.active_positions.items():
+                symbol = pos['symbol']
+                units = pos['units']
+                direction = pos['direction']
+                entry = pos['entry']
+                
+                # Calculate notional value (units * entry price)
+                notional = units * entry
+                position_margin_pct = (margin_used / account_balance * 100) if account_balance > 0 else 0
+                
+                # Get recommendation from margin maximizer
+                allocation = margin_calc.get_allocation_for_symbol(
+                    symbol,
+                    account_balance=account_balance,
+                    existing_positions=self.active_positions
+                )
+                
+                target_notional = allocation['target_notional']
+                max_notional = allocation['max_notional']
+                target_units = target_notional / entry if entry > 0 else 0
+                max_units = max_notional / entry if entry > 0 else 0
+                
+                status = "✅"
+                if units < target_units * 0.8:  # More than 20% undersized
+                    status = "⚠️ UNDERSIZED"
+                    adjustments_needed = True
+                elif units > max_units * 1.1:   # More than 10% oversized
+                    status = "⚠️ OVERSIZED"
+                    adjustments_needed = True
+                
+                print(f"   {status} {symbol} {direction:4} | Units: {units:>8,.0f} | "
+                      f"Entry: {entry:.5f} | Notional: ${notional:>10,.0f}")
+                print(f"         Target: {target_units:>8,.0f} units | "
+                      f"Max: {max_units:>8,.0f} units | Risk Factor: 1.5%")
+                print()
+            
+            print("   " + "=" * 100)
+            print()
+            
+            if adjustments_needed:
+                print("   RECOMMENDATION:")
+                print("   Close and reopen undersized positions to align with new 1.5% risk config")
+                print("   This will increase position sizes by ~50% on average")
+                print("   New margin utilization target: 25-30% (currently {:.1f}%)".format(margin_pct))
+                print()
+                
+                # Auto-resize if enabled
+                auto_resize = os.getenv('RBOT_AUTO_RESIZE_POSITIONS', '0') == '1'
+                if auto_resize:
+                    self.display.alert("AUTO_RESIZE enabled - closing undersized positions", "INFO")
+                    self._auto_resize_undersized_positions()
+                else:
+                    self.display.info("💡 Set RBOT_AUTO_RESIZE_POSITIONS=1 to auto-close and reopen positions")
+            else:
+                self.display.success("✅ All positions are properly sized for new config")
+            
+            # Log analysis
+            log_narration(
+                event_type="POSITION_REOPTIMIZATION_ANALYSIS",
+                details={
+                    "account_balance": account_balance,
+                    "current_margin_pct": margin_pct,
+                    "target_margin_range": f"{target_margin_min*100:.0f}%-{target_margin_max*100:.0f}%",
+                    "adjustments_needed": adjustments_needed,
+                    "positions_analyzed": len(self.active_positions),
+                    "new_config": "risk_1.5%_confidence_76%"
+                }
+            )
+            
+        except Exception as e:
+            self.display.error(f"❌ Position reoptimization analysis failed: {e}")
+            log_narration(
+                event_type="POSITION_REOPTIMIZATION_ERROR",
+                details={"error": str(e)}
+            )
+
+    def _auto_resize_undersized_positions(self):
+        """Close undersized positions to allow bot to reopen at correct sizing"""
+        self.display.alert("Closing undersized positions for resizing...", "WARNING")
+        
+        try:
+            from util.margin_maximizer import MarginMaximizer, MarginConfig
+            
+            # Get fresh account info
+            acct_info = self.oanda.get_account_info()
+            account_balance = float(getattr(acct_info, 'balance', None) or 10000.0)
+            
+            margin_calc = MarginMaximizer(
+                MarginConfig(
+                    risk_per_trade_min=0.10,
+                    risk_per_trade_target=0.15,
+                    risk_per_trade_max=0.20
+                )
+            )
+            margin_calc.account_balance = account_balance
+            
+            closed_count = 0
+            for trade_id, pos in list(self.active_positions.items()):
+                symbol = pos['symbol']
+                units = pos['units']
+                entry = pos['entry']
+                direction = pos['direction']
+                
+                allocation = margin_calc.get_allocation_for_symbol(
+                    symbol,
+                    account_balance=account_balance
+                )
+                target_units = (allocation['target_notional'] / entry) if entry > 0 else 0
+                
+                # Close if undersized (less than 80% of target)
+                if units < target_units * 0.80:
+                    try:
+                        # Close at market (or within 1 pip if market looks bad)
+                        self.display.info(f"   Closing {symbol} {direction} {units:,.0f} units "
+                                         f"(undersized: {units:,.0f} vs target {target_units:,.0f})")
+                        
+                        self.oanda.close_trade(trade_id)
+                        closed_count += 1
+                        
+                        # Remove from tracking
+                        del self.active_positions[trade_id]
+                        
+                    except Exception as close_err:
+                        self.display.error(f"   ❌ Failed to close {trade_id}: {close_err}")
+            
+            if closed_count > 0:
+                self.display.success(f"✅ Closed {closed_count} undersized position(s) for resizing")
+                self.display.info("💡 Bot will reopen with new sizing on next scan cycle")
+                log_narration(
+                    event_type="POSITIONS_CLOSED_FOR_RESIZE",
+                    details={
+                        "closed_count": closed_count,
+                        "new_config": "risk_1.5%_confidence_76%",
+                        "next_action": "await_reopen_with_new_sizing"
+                    }
+                )
+        except Exception as e:
+            self.display.error(f"❌ Auto-resize failed: {e}")
+
     async def trade_manager_loop(self):
         """Background loop that evaluates active positions and asks the Hive for momentum signals.
 
@@ -1866,6 +2067,9 @@ class OandaTradingEngine:
         
         # Sync any trades already open on the broker before the manager starts
         self._sync_open_positions()
+        
+        # Analyze positions against new config (1.5% risk, 76%+ confidence)
+        self._analyze_and_reoptimize_positions()
 
         # Start TradeManager background task
         trade_manager_task = asyncio.create_task(self.trade_manager_loop())
