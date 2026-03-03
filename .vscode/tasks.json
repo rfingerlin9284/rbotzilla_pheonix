@@ -76,14 +76,14 @@
     {
       "label": "🔍 System Diagnostics",
       "type": "shell",
-      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && /home/rfing/RBOTZILLA_PHOENIX/venv/bin/python run_diagnostics.py",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && source venv/bin/activate && python run_diagnostics.py",
       "presentation": { "reveal": "always", "panel": "shared", "title": "Diagnostics" },
       "problemMatcher": []
     },
     {
       "label": "🔍 System Diagnostics (JSON Export)",
       "type": "shell",
-      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && /home/rfing/RBOTZILLA_PHOENIX/venv/bin/python run_diagnostics.py --json && echo '' && echo '📄 Exported to /tmp/rbotzilla_diagnostics.json'",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && source venv/bin/activate && python run_diagnostics.py --json && echo '' && echo '📄 Exported to /tmp/rbotzilla_diagnostics.json'",
       "presentation": { "reveal": "always", "panel": "shared", "title": "Diagnostics" },
       "problemMatcher": []
     }
