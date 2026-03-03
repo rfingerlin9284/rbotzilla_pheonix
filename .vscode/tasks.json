@@ -1,0 +1,248 @@
+{
+  "version": "2.0.0",
+  "options": {
+    "shell": {
+      "executable": "/bin/bash",
+      "args": ["-c"]
+    }
+  },
+  "tasks": [
+    {
+      "label": "▶ Start Bot (Paper)",
+      "type": "shell",
+      "command": "pkill -f oanda_trading_engine.py 2>/dev/null; sleep 1; cd /home/rfing/RBOTZILLA_PHOENIX && RBOT_FORCE_RUN=1 /home/rfing/RBOTZILLA_PHOENIX/venv/bin/python -u oanda_trading_engine.py",
+      "group": { "kind": "build", "isDefault": true },
+      "presentation": { "reveal": "always", "panel": "new", "title": "RBotzilla Engine" },
+      "problemMatcher": []
+    },
+    {
+      "label": "⏹ Stop Bot",
+      "type": "shell",
+      "command": "pkill -f oanda_trading_engine.py && echo '✅ Bot stopped' || echo '⚠️ No bot running'",
+      "presentation": { "reveal": "always", "panel": "shared", "title": "RBotzilla Control" },
+      "problemMatcher": []
+    },
+    {
+      "label": "🔄 Restart Bot",
+      "type": "shell",
+      "command": "pkill -f oanda_trading_engine.py 2>/dev/null; sleep 2; cd /home/rfing/RBOTZILLA_PHOENIX && RBOT_FORCE_RUN=1 /home/rfing/RBOTZILLA_PHOENIX/venv/bin/python -u oanda_trading_engine.py",
+      "presentation": { "reveal": "always", "panel": "new", "title": "RBotzilla Restart" },
+      "problemMatcher": []
+    },
+    {
+      "label": "📊 Status / Open Positions",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && /home/rfing/RBOTZILLA_PHOENIX/venv/bin/python scripts/check_positions.py",
+      "presentation": { "reveal": "always", "panel": "shared", "title": "Positions" },
+      "problemMatcher": []
+    },
+    {
+      "label": "📡 Scan Log (live tail)",
+      "type": "shell",
+      "command": "tail -f /tmp/rbz.log 2>/dev/null | grep --line-buffered -E 'SCAN:|conf=|Placing|below_threshold|already_active|no_signal|SCALE_OUT|BREAKEVEN|TRAIL|FORCED_CLOSE|Synced'",
+      "presentation": { "reveal": "always", "panel": "shared", "title": "Scan Log" },
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "📜 Narration Log (live tail)",
+      "type": "shell",
+      "command": "tail -f /home/rfing/RBOTZILLA_PHOENIX/logs/narration.jsonl 2>/dev/null | /home/rfing/RBOTZILLA_PHOENIX/venv/bin/python3 -u -c \"import sys,json\nfor line in sys.stdin:\n    try:\n        d=json.loads(line); ts=d.get('timestamp','')[:19]; evt=d.get('event_type',''); sym=d.get('symbol',''); det=str(d.get('details',''))[:140]\n        print(f'{ts}  {evt:30} {sym:10} {det}')\n    except: print(line.strip())\"",
+      "presentation": { "reveal": "always", "panel": "shared", "title": "Narration" },
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "📈 Performance Analysis",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && /home/rfing/RBOTZILLA_PHOENIX/venv/bin/python3 -c \"\nimport json\nfrom pathlib import Path\nfrom collections import defaultdict\nfrom datetime import datetime\n\nnarration_file = Path('logs/narration.jsonl')\nif not narration_file.exists():\n    print('❌ narration.jsonl not found - no trades yet')\n    exit(0)\n\ntrades = []\nwins = losses = 0\ntotal_pnl = 0\nby_symbol = defaultdict(lambda: {'wins': 0, 'losses': 0, 'pnl': 0})\n\nwith open(narration_file) as f:\n    for line in f:\n        try:\n            data = json.loads(line.strip())\n            if data.get('event_type') != 'TRADE_CLOSED':\n                continue\n            \n            ts = data.get('timestamp', '')[:19]\n            sym = data.get('symbol', 'N/A')\n            direction = data.get('details', {}).get('direction', '?')\n            pnl = data.get('details', {}).get('pnl_usd', 0)\n            rr = data.get('details', {}).get('rr_executed', 1)\n            duration = data.get('details', {}).get('duration_minutes', 0)\n            \n            is_win = pnl > 0\n            if is_win:\n                wins += 1\n            else:\n                losses += 1\n            \n            total_pnl += pnl\n            by_symbol[sym]['pnl'] += pnl\n            if is_win:\n                by_symbol[sym]['wins'] += 1\n            else:\n                by_symbol[sym]['losses'] += 1\n            \n            trades.append({\n                'ts': ts, 'sym': sym, 'dir': direction, \n                'pnl': pnl, 'rr': rr, 'dur': duration, 'win': is_win\n            })\n        except:\n            pass\n\nif not trades:\n    print('❌ No closed trades found')\n    exit(0)\n\ntotal = wins + losses\nwin_rate = (wins / total * 100) if total > 0 else 0\navg_win = sum(t['pnl'] for t in trades if t['win']) / wins if wins > 0 else 0\navg_loss = sum(t['pnl'] for t in trades if not t['win']) / losses if losses > 0 else 0\nrr_ratio = abs(avg_win / avg_loss) if avg_loss != 0 else 0\n\nstatus_icon = '✅' if win_rate >= 55 else '⚠️'\nprint(f'\\n📊 PERFORMANCE SUMMARY')\nprint(f'═' * 60)\nprint(f'{status_icon} Win Rate: {win_rate:.1f}% ({wins}W/{losses}L) [Target: 55%+]')\nprint(f'   Total P&L: \\${total_pnl:+.2f}')\nprint(f'   Avg Win: \\${avg_win:+.2f} | Avg Loss: \\${avg_loss:+.2f}')\nprint(f'   R:R Ratio: {rr_ratio:.2f}:1')\nprint(f'\\n📍 BY SYMBOL:')\nfor sym in sorted(by_symbol.keys()):\n    stats = by_symbol[sym]\n    s_total = stats['wins'] + stats['losses']\n    s_rate = (stats['wins'] / s_total * 100) if s_total > 0 else 0\n    print(f'   {sym:10} {s_rate:5.1f}% ({stats[\\\"wins\\\"]:2}W/{stats[\\\"losses\\\"]:2}L) | P&L: \\${stats[\\\"pnl\\\"]:+.2f}')\n\nprint(f'\\n📋 LAST 15 TRADES:')\nfor t in trades[-15:]:\n    icon = '✅' if t['win'] else '❌'\n    print(f'   {icon} {t[\\\"ts\\\"]} {t[\\\"sym\\\"]:10} {t[\\\"dir\\\"]:6} \\${t[\\\"pnl\\\"]:+7.2f} | {t[\\\"dur\\\"]:4.0f}min R:{t[\\\"rr\\\"]:4.2f}')\nprint()\n\"",
+      "presentation": { "reveal": "always", "panel": "shared", "title": "Performance" },
+      "problemMatcher": []
+    },
+    {
+      "label": "✅ Verify System",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && /home/rfing/RBOTZILLA_PHOENIX/venv/bin/python verify_system_ready.py",
+      "presentation": { "reveal": "always", "panel": "shared", "title": "Verify" },
+      "problemMatcher": []
+    },
+    {
+      "label": "🔍 System Diagnostics (Full)",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && /home/rfing/RBOTZILLA_PHOENIX/venv/bin/python run_diagnostics.py",
+      "presentation": { "reveal": "always", "panel": "shared", "title": "Diagnostics" },
+      "problemMatcher": []
+    },
+    {
+      "label": "🔍 System Diagnostics (JSON Export)",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && /home/rfing/RBOTZILLA_PHOENIX/venv/bin/python run_diagnostics.py --json && echo '' && echo '📄 Exported to /tmp/rbotzilla_diagnostics.json'",
+      "presentation": { "reveal": "always", "panel": "shared", "title": "Diagnostics" },
+      "problemMatcher": []
+    },
+    {
+      "label": "🔒 Mode → Paper",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && /home/rfing/RBOTZILLA_PHOENIX/venv/bin/python3 -c \"import json; f='configs/runtime_mode.json'; d=json.load(open(f)); d['mode']='PAPER'; json.dump(d,open(f,'w'),indent=2); print('✅ Mode: PAPER')\"",
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": []
+    },
+    {
+      "label": "💾 Git Save",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && git add -A && git commit -m \"checkpoint: $(date '+%Y-%m-%d %H:%M')\" || echo 'Nothing to commit'",
+      "presentation": { "reveal": "always", "panel": "shared", "title": "Git Save" },
+      "problemMatcher": []
+    },
+    {
+      "label": "🧪 Run Backtest",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && /home/rfing/RBOTZILLA_PHOENIX/venv/bin/python backtest/runner.py",
+      "presentation": { "reveal": "always", "panel": "shared", "title": "Backtest" },
+      "problemMatcher": []
+    },
+    {
+      "label": "📊 Backtest Analyzer",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && /home/rfing/RBOTZILLA_PHOENIX/venv/bin/python backtest/analyzer.py",
+      "presentation": { "reveal": "always", "panel": "shared", "title": "Analysis" },
+      "problemMatcher": []
+    },
+    {
+      "label": "🔬 Backtest Narrator",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && /home/rfing/RBOTZILLA_PHOENIX/venv/bin/python backtest/narrator.py",
+      "presentation": { "reveal": "always", "panel": "shared", "title": "Narrator" },
+      "problemMatcher": []
+    },
+    {
+      "label": "📋 Backtest Report (Export)",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && /home/rfing/RBOTZILLA_PHOENIX/venv/bin/python backtest/analyzer.py --export-json backtest/results/summary.json && echo '✅ Exported to backtest/results/summary.json'",
+      "presentation": { "reveal": "always", "panel": "shared", "title": "Export" },
+      "problemMatcher": []
+    },
+    {
+      "label": "📺 Start Streamlit Dashboard",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && /home/rfing/RBOTZILLA_PHOENIX/venv/bin/streamlit run dashboard/app_enhanced.py --logger.level=error",
+      "presentation": { "reveal": "always", "panel": "shared", "title": "Dashboard" },
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "🔗 WebSocket Server",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && /home/rfing/RBOTZILLA_PHOENIX/venv/bin/python dashboard/websocket_server.py",
+      "presentation": { "reveal": "always", "panel": "shared", "title": "WebSocket" },
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "⚙️ Edit runtime_mode.json",
+      "type": "shell",
+      "command": "echo '📝 Opening configs/runtime_mode.json' && cat /home/rfing/RBOTZILLA_PHOENIX/configs/runtime_mode.json && echo '\\nEdit in VS Code: Ctrl+P → runtime_mode.json'",
+      "presentation": { "reveal": "always", "panel": "shared", "title": "Config" },
+      "problemMatcher": []
+    },
+    {
+      "label": "⚙️ View .env Settings",
+      "type": "shell",
+      "command": "echo '🔐 Environment settings (secrets masked):' && echo 'Check ops/secrets.env in VS Code or update your .env with:' && echo 'ENABLE_DASHBOARD=0' && echo 'ENABLE_OANDA=1' && echo 'OANDA_PRACTICE_ACCOUNT_ID=<your_account_id>' && echo 'OANDA_PRACTICE_TOKEN=<your_token>'",
+      "presentation": { "reveal": "always", "panel": "shared", "title": "Env" },
+      "problemMatcher": []
+    },
+    {
+      "label": "🔐 Verify Configurations",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && /home/rfing/RBOTZILLA_PHOENIX/venv/bin/python tools/verify_configs.py 2>/dev/null || echo '⚠️ verify_configs.py not found - check tool/verify_configs.py path'",
+      "presentation": { "reveal": "always", "panel": "shared", "title": "Verify Configs" },
+      "problemMatcher": []
+    },
+    {
+      "label": "📋 List Open Orders",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && /home/rfing/RBOTZILLA_PHOENIX/venv/bin/python scripts/check_positions.py",
+      "presentation": { "reveal": "always", "panel": "shared", "title": "Orders" },
+      "problemMatcher": []
+    },
+    {
+      "label": "💰 Get Account Balance",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && /home/rfing/RBOTZILLA_PHOENIX/venv/bin/python3 -c \"\nimport os, json\nfrom oandapyV20 import API\nfrom oandapyV20.endpoints.accounts import AccountSummary\n\ntoken = os.environ.get('OANDA_PRACTICE_TOKEN')\naccount_id = os.environ.get('OANDA_PRACTICE_ACCOUNT_ID')\n\nif not token or not account_id:\n    print('❌ OANDA credentials not in env')\n    exit(1)\n\ntry:\n    api = API(access_token=token, environment='practice')\n    r = AccountSummary(account_id)\n    resp = api.request(r)\n    data = resp['account']\n    print(f'💰 ACCOUNT SUMMARY')\n    print(f'═' * 50)\n    print(f'Balance: \\${float(data.get(\\\"balance\\\", 0)):,.2f}')\n    print(f'Nav: \\${float(data.get(\\\"net_asset_value\\\", 0)):,.2f}')\n    print(f'Margin Available: \\${float(data.get(\\\"margin_available\\\", 0)):,.2f}')\n    print(f'Open Trades: {data.get(\\\"open_trade_count\\\", 0)}')\n    print(f'Unrealized P&L: \\${float(data.get(\\\"unrealized_pl\\\", 0)):+,.2f}')\nexcept Exception as e:\n    print(f'❌ Error: {e}')\n\"",
+      "presentation": { "reveal": "always", "panel": "shared", "title": "Balance" },
+      "problemMatcher": []
+    },
+    {
+      "label": "🔌 Close All Positions",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && /home/rfing/RBOTZILLA_PHOENIX/venv/bin/python3 -c \"\nimport os, json\nfrom oandapyV20 import API\nfrom oandapyV20.endpoints.positions import PositionClose\n\ntoken = os.environ.get('OANDA_PRACTICE_TOKEN')\naccount_id = os.environ.get('OANDA_PRACTICE_ACCOUNT_ID')\n\nif not token or not account_id:\n    print('❌ OANDA credentials not found')\n    exit(1)\n\nprint('⚠️  This will close ALL positions. Type YES to confirm: ', end='')\nif input().strip().upper() != 'YES':\n    print('Cancelled')\n    exit(0)\n\ntry:\n    api = API(access_token=token, environment='practice')\n    instruments = ['EUR_USD', 'GBP_USD', 'USD_JPY']\n    for inst in instruments:\n        r = PositionClose(accountID=account_id, instrument=inst, data={'longUnits': 'ALL', 'shortUnits': 'ALL'})\n        resp = api.request(r)\n        print(f'✅ Closed {inst}')\nexcept Exception as e:\n    print(f'❌ Error: {e}')\n\"",
+      "presentation": { "reveal": "always", "panel": "shared", "title": "Close Pos" },
+      "problemMatcher": []
+    },
+    {
+      "label": "🧪 Verify System (Comprehensive)",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && /home/rfing/RBOTZILLA_PHOENIX/venv/bin/python verify_system.py",
+      "presentation": { "reveal": "always", "panel": "shared", "title": "Verify 130+" },
+      "problemMatcher": []
+    },
+    {
+      "label": "✔️ Run Unit Tests",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && /home/rfing/RBOTZILLA_PHOENIX/venv/bin/python -m pytest tests/ -v --cov=. --cov-report=html 2>/dev/null || echo '⚠️ No tests/ directory or pytest not installed'",
+      "presentation": { "reveal": "always", "panel": "shared", "title": "Tests" },
+      "problemMatcher": []
+    },
+    {
+      "label": "📦 Lint / Format Check",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && /home/rfing/RBOTZILLA_PHOENIX/venv/bin/python -m black --check --line-length=120 . 2>/dev/null || echo '⚠️ black not installed - run: pip install black'",
+      "presentation": { "reveal": "always", "panel": "shared", "title": "Lint" },
+      "problemMatcher": []
+    },
+    {
+      "label": "📦 Build Deployment Package",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && /home/rfing/RBOTZILLA_PHOENIX/venv/bin/python tools/build_deployment.py 2>/dev/null || mkdir -p dist && tar -czf dist/rbotzilla_v1.tar.gz --exclude=.git --exclude=__pycache__ --exclude=.venv --exclude=venv . && echo '✅ Package: dist/rbotzilla_v1.tar.gz'",
+      "presentation": { "reveal": "always", "panel": "shared", "title": "Deploy" },
+      "problemMatcher": []
+    },
+    {
+      "label": "📊 Capital Manager",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && /home/rfing/RBOTZILLA_PHOENIX/venv/bin/python capital_manager.py",
+      "presentation": { "reveal": "always", "panel": "shared", "title": "Capital" },
+      "problemMatcher": []
+    },
+    {
+      "label": "📡 View Headless Logs",
+      "type": "shell",
+      "command": "tail -200f /home/rfing/RBOTZILLA_PHOENIX/logs/oanda_headless.log 2>/dev/null || echo '❌ Log file not found - bot may not have started'",
+      "presentation": { "reveal": "always", "panel": "shared", "title": "Headless" },
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "🔊 System Audit",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash system_audit.sh 2>/dev/null || echo '⚠️ system_audit.sh not found'",
+      "presentation": { "reveal": "always", "panel": "shared", "title": "Audit" },
+      "problemMatcher": []
+    },
+    {
+      "label": "🛡️ Verify Live Safety",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash verify_live_safety.sh 2>/dev/null || echo '⚠️ verify_live_safety.sh not found'",
+      "presentation": { "reveal": "always", "panel": "shared", "title": "Live Safety" },
+      "problemMatcher": []
+    },
+    {
+      "label": "📋 Verify Paper Mode",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash verify_paper_mode.sh 2>/dev/null || echo '⚠️ verify_paper_mode.sh not found'",
+      "presentation": { "reveal": "always", "panel": "shared", "title": "Paper Mode" },
+      "problemMatcher": []
+    }
+  ]
+}

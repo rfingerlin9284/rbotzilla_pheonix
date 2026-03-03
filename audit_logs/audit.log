@@ -1,0 +1,132 @@
+
+[✓] Scanning /home/rfing/RBOTZILLA_PHOENIX
+[✓]   CSV files found: 87
+[✓]   Simulation files: 64
+[✓]     → rbotzilla_unified_10year_sim.py
+[✓]     → rbotzilla_10year_engine.py
+[✓]     → rbotzilla_deposits_10year.py
+[✓]     → rbotzilla_unified_10year_sim.py
+[✓]     → rbotzilla_unified_10year_sim.py
+
+[✓] Scanning /home/rfing/RBOTZILLA_PHOENIX
+[✓]   CSV files found: 87
+[✓]   Simulation files: 64
+[✓]     → rbotzilla_unified_10year_sim.py
+[✓]     → rbotzilla_10year_engine.py
+[✓]     → rbotzilla_deposits_10year.py
+[✓]     → rbotzilla_unified_10year_sim.py
+[✓]     → rbotzilla_unified_10year_sim.py
+[✓] Scanning /home/rfing/RBOTZILLA_PHOENIX/_source_repos/R_H_UNI
+[✓]   CSV files found: 0
+[✓] Scanning /home/rfing/RBOTZILLA_PHOENIX/_source_repos/rick_clean_live
+[✓]   CSV files found: 0
+[✓]   Simulation files: 8
+[✓]     → rbotzilla_unified_10year_sim.py
+[✓]     → rbotzilla_10year_engine.py
+[✓]     → rbotzilla_deposits_10year.py
+[✓]     → rbotzilla_unified_10year_sim.py
+[✓] Scanning /home/rfing/RBOTZILLA_PHOENIX/_source_repos/RICK_LIVE_CLEAN_FROZEN
+[✓]   CSV files found: 0
+[✓]   Simulation files: 24
+[✓]     → rbotzilla_unified_10year_sim.py
+[✓]     → rbotzilla_10year_engine.py
+[✓]     → rbotzilla_deposits_10year.py
+[✓]     → rbotzilla_unified_10year_sim.py
+[✓]     → rbotzilla_unified_10year_sim.py
+
+[✓] ✅ Strategy: Trap Reversal Scalper
+
+[✓] Scanning /home/rfing/RBOTZILLA_PHOENIX
+[✓]   CSV files found: 87
+[✓]   Simulation files: 64
+[✓]     → rbotzilla_unified_10year_sim.py
+[✓]     → rbotzilla_10year_engine.py
+[✓]     → rbotzilla_deposits_10year.py
+[✓]     → rbotzilla_unified_10year_sim.py
+[✓]     → rbotzilla_unified_10year_sim.py
+[✓] Scanning /home/rfing/RBOTZILLA_PHOENIX/_source_repos/R_H_UNI
+[✓]   CSV files found: 0
+[✓] Scanning /home/rfing/RBOTZILLA_PHOENIX/_source_repos/rick_clean_live
+[✓]   CSV files found: 0
+[✓]   Simulation files: 8
+[✓]     → rbotzilla_unified_10year_sim.py
+[✓]     → rbotzilla_10year_engine.py
+[✓]     → rbotzilla_deposits_10year.py
+[✓]     → rbotzilla_unified_10year_sim.py
+[✓] Scanning /home/rfing/RBOTZILLA_PHOENIX/_source_repos/RICK_LIVE_CLEAN_FROZEN
+[✓]   CSV files found: 0
+[✓]   Simulation files: 24
+[✓]     → rbotzilla_unified_10year_sim.py
+[✓]     → rbotzilla_10year_engine.py
+[✓]     → rbotzilla_deposits_10year.py
+[✓]     → rbotzilla_unified_10year_sim.py
+[✓]     → rbotzilla_unified_10year_sim.py
+
+[✓] ✅ Strategy: Trap Reversal Scalper
+[✓] ✅ Strategy: Fibonacci Confluence
+[✓] ✅ Strategy: Price Action Holy Grail
+[✓] ✅ Strategy: Liquidity Sweep
+[✓] ✅ Strategy: EMA Crossover Scalper
+
+[✓] ✅ Position Guardian - Autonomous profit protection
+[✓] ✅ Correlation Gate - Order conflict prevention
+[✓] ✅ Margin Governor - Leverage cap enforcement
+[✓] ✅ Auto-Breakeven - Profit locking
+[✓] ✅ 3-Stage Trailing - Extended profit taking
+[✓] ✅ Peak Giveback - Loss prevention
+[✓] ✅ Time-Based Caps - Session discipline
+[✓] ✅ OCO Validator - Order coordination
+[✓] ✅ Smart Risk Logic - Intelligent risk management
+[✓] ✅ Broker Disconnect Detection - Connection monitoring
+
+[✓] Broker connector latency checks:
+[✓]   ✓ oanda connector: Present (live latency on deployment)
+[✓]   ✓ coinbase connector: Present (live latency on deployment)
+[✓]   ✓ ib connector: Present (live latency on deployment)
+[✓] Dashboard API: Present (Flask app)
+
+[✓] ✅ ML Models (28K)
+[✓] ✅ Pattern Learner (24K)
+[✓] ✅ Strategy Optimizer (24K)
+[✓] ✅ Learning Database (24K)
+[✓] ✅ Automated retraining schedule: CONFIGURED
+[✓] ✅ Positive reinforcement training: CONFIGURED
+
+[✓] Error handling blocks: 235
+[✓] Logging statements: 0
+[✓] ✅ Health monitoring: CONFIGURED
+[⚠] ⚠️  Live Ghost Engine: NOT RUNNING
+
+[✓] ✅ Narration feed
+[⚠] ⚠️  Narration formatter - NOT FOUND
+[⚠] ⚠️  Dashboard app - NOT FOUND
+[✓] ✅ Narration formatting logic: PRESENT
+
+[✓] ✅ Correlation monitoring
+[✓] ✅ Risk control
+[✓] ✅ Dynamic position sizing
+[✓] ✅ Session awareness
+[✓] ✅ Adaptive intelligence
+[✓] ✅ Hive Mind collective
+
+[✓] ✅ OCO components: 124 files found
+[✓]    → check_engine_protocol.py
+[✓]    → tranche_oco_manager.py
+[✓]    → subprotocol.js
+[✓]    → subprotocol.js
+[✓]    → subprotocol.js
+[✓] ✅ OCO validation logic: ACTIVE
+
+[✗] ❌ Makefile: NOT FOUND
+
+[✓] ✅ Hive component: rick_hive_mind.py
+[✓] ✅ Hive component: hive_mind_processor.py
+[✓] ✅ Hive component: browser_ai_connector.py
+[✓] ✅ ML leverage in decisions: ACTIVE
+
+[✓] ✅ Cache/memory cleanup: CONFIGURED
+[✓] Total Python files: 18533
+
+[✓] ✅ Active listening/monitoring: CONFIGURED
+[✓] Trigger mechanisms: 115 references
+[✓] ✅ Ready/armed state management: PRESENT

@@ -1,0 +1,25 @@
+{
+  "mode": "PAPER",
+  "headless": true,
+  "dashboard_enabled": false,
+  "brokers": {
+    "oanda": {
+      "enabled": true
+    },
+    "coinbase": {
+      "enabled": false
+    }
+  },
+  "last_updated": "2026-03-01T23:57:23.650423+00:00",
+  "history": [
+    {
+      "from": "PAPER",
+      "to": "PAPER",
+      "ts": "2026-03-01T23:57:23.648594+00:00",
+      "brokers": {
+        "oanda": true,
+        "coinbase": false
+      }
+    }
+  ]
+}
