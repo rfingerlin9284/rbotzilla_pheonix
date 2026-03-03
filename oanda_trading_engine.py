@@ -267,6 +267,22 @@ class OandaTradingEngine:
         self.is_running = False
         self.session_start = datetime.now(timezone.utc)
         
+        # ========================================================================
+        # BOT STATUS AWARENESS (Knows if it's trading or not)
+        # ========================================================================
+        self.bot_status = {
+            'engine_initialized': True,
+            'is_trading': False,           # Main flag: bot is actively trading
+            'connected': True,             # Connection to OANDA
+            'positions_open': 0,           # Number of open positions
+            'last_trade_time': None,       # When last trade was placed
+            'last_signal_check': None,     # When signals last checked
+            'total_signals_scanned': 0,    # Lifetime signal count
+            'total_positions_opened': 0,   # Lifetime accounts for trades
+            'session_uptime_seconds': 0,   # How long bot has been running
+            'status_message': 'BOT INITIALIZED - READY TO START'
+        }
+        
         # Platform-specific pair management (per user requirement)
         # Max 3-4 pairs per platform, no duplicates across platforms
         self.max_pairs_per_platform = 4
@@ -563,6 +579,43 @@ class OandaTradingEngine:
             except Exception as e:
                 self.display.error(f"Error in connection health monitor: {e}")
                 await asyncio.sleep(5)
+    
+    def update_bot_status(self):
+        """Update bot status awareness - knows if it's trading or not"""
+        try:
+            # Update basic status
+            self.bot_status['is_trading'] = self.is_running and len(self.active_positions) > 0
+            self.bot_status['connected'] = self.connection_state.get('connected', True)
+            self.bot_status['positions_open'] = len(self.active_positions)
+            self.bot_status['session_uptime_seconds'] = (datetime.now(timezone.utc) - self.session_start).total_seconds()
+            
+            # Update status message
+            if not self.is_running:
+                self.bot_status['status_message'] = '🔴 BOT STOPPED'
+            elif not self.bot_status['connected']:
+                self.bot_status['status_message'] = f"⚠️  RECONNECTING (Attempt #{self.connection_state.get('reconnect_attempt', 0)})"
+            elif self.bot_status['is_trading']:
+                self.bot_status['status_message'] = f"🟢 ACTIVELY TRADING ({self.bot_status['positions_open']} positions open)"
+            elif self.is_running:
+                self.bot_status['status_message'] = f"🟡 RUNNING (Scanning for signals, 0 positions)"
+            else:
+                self.bot_status['status_message'] = '⚪ IDLE'
+                
+        except Exception as e:
+            self.display.warning(f"⚠️  Error updating bot status: {e}")
+    
+    def get_bot_status(self) -> Dict:
+        """Get current bot status awareness"""
+        self.update_bot_status()
+        return self.bot_status.copy()
+    
+    def is_bot_actively_trading(self) -> bool:
+        """Check if bot is ACTIVELY TRADING (has open positions and is running)"""
+        return self.bot_status.get('is_trading', False)
+    
+    def get_status_message(self) -> str:
+        """Get human-readable status message"""
+        return self.bot_status.get('status_message', 'UNKNOWN')
     
     def get_current_price(self, pair):
         """Get current real-time price from OANDA API (environment-agnostic)"""
@@ -2284,6 +2337,9 @@ class OandaTradingEngine:
                 
                 # Check existing positions
                 self.check_positions()
+                
+                # Update bot status awareness (knows if trading or not)
+                self.update_bot_status()
 
                 # Refresh gate NAV from live account balance each cycle
                 try:
