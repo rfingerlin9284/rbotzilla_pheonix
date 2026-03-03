@@ -158,7 +158,7 @@ class OandaTradingEngine:
         
         # Initialize Hive-LLM Orchestrator if available
         if HIVE_LLM_ORCHESTRATOR_AVAILABLE:
-            self.hive_llm_orchestrator = HiveLLMOrchestrator(logger_instance=self.display.logger)
+            self.hive_llm_orchestrator = HiveLLMOrchestrator()
             self.display.success("✅ Hive-LLM Orchestrator initialized")
         else:
             self.hive_llm_orchestrator = None
