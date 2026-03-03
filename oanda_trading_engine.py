@@ -48,8 +48,19 @@ from brokers.oanda_connector import OandaConnector
 from util.terminal_display import TerminalDisplay, Colors
 from util.narration_logger import log_narration, log_pnl
 from util.rick_narrator import RickNarrator
+
+# Momentum-based adaptive SL system (NEW)
+try:
+    from risk.momentum_adaptive_sl import (
+        MomentumProfile, AdaptiveStopLoss, WinningTradeAnalyzer, 
+        ReallocateCapital, calculate_momentum_profile
+    )
+    MOMENTUM_ADAPTIVE_SL_AVAILABLE = True
+except ImportError:
+    MOMENTUM_ADAPTIVE_SL_AVAILABLE = False
 from util.usd_converter import get_usd_notional
 from util.positions_registry import PositionsRegistry
+from util.position_dashboard import PositionDashboard
 from systems.multi_signal_engine import scan_symbol, manage_open_trade, TradeAction, AggregatedSignal
 
 # Tight trailing stop + TP guard (dec4_dec10 reference: rbz_tight_trailing.py)
@@ -76,6 +87,14 @@ try:
 except ImportError:
     HIVE_AVAILABLE = False
     print("⚠️  Hive Mind not available - running without swarm coordination")
+
+# Hive-LLM Orchestrator imports
+try:
+    from hive.hive_llm_orchestrator import HiveLLMOrchestrator, TradeOpportunity
+    HIVE_LLM_ORCHESTRATOR_AVAILABLE = True
+except ImportError:
+    HIVE_LLM_ORCHESTRATOR_AVAILABLE = False
+    print("⚠️  Hive-LLM Orchestrator not available")
 
 # Momentum & Trailing imports (extracted from rbotzilla_golden_age.py)
 try:
@@ -136,6 +155,13 @@ class OandaTradingEngine:
             self.display.success("✅ Hive Mind connected")
         else:
             self.hive_mind = None
+        
+        # Initialize Hive-LLM Orchestrator if available
+        if HIVE_LLM_ORCHESTRATOR_AVAILABLE:
+            self.hive_llm_orchestrator = HiveLLMOrchestrator(logger_instance=self.display.logger)
+            self.display.success("✅ Hive-LLM Orchestrator initialized")
+        else:
+            self.hive_llm_orchestrator = None
         
         # Initialize Momentum System if available
         if MOMENTUM_SYSTEM_AVAILABLE:
@@ -277,6 +303,13 @@ class OandaTradingEngine:
             symbol="SYSTEM",
             venue="oanda"
         )
+        
+        # ========================================================================
+        # POSITION DASHBOARD (Active monitoring + display)
+        # ========================================================================
+        self.dashboard = PositionDashboard(refresh_interval_sec=60)
+        self.display.success("✅ Position Dashboard initialized (60s refresh)")
+        self.dashboard_task = None  # Track monitoring task
         
         self._display_startup()
     
@@ -976,6 +1009,37 @@ class OandaTradingEngine:
             reward = abs(take_profit - entry_price)
             rr_ratio = reward / risk if risk > 0 else 0
             
+            # If R:R is below minimum, ESCALATE TP to meet charter requirements
+            # (rather than rejecting the trade)
+            if rr_ratio < self.min_rr_ratio:
+                required_reward = risk * self.min_rr_ratio
+                if direction == "BUY":
+                    take_profit = round(entry_price + required_reward, 5)
+                    self.display.warning(
+                        f"⚙️  RR ESCALATION: {rr_ratio:.2f} → {self.min_rr_ratio:.1f}:1 "
+                        f"(TP {entry_price + (required_reward - reward):+.5f})"
+                    )
+                else:
+                    take_profit = round(entry_price - required_reward, 5)
+                    self.display.warning(
+                        f"⚙️  RR ESCALATION: {rr_ratio:.2f} → {self.min_rr_ratio:.1f}:1 "
+                        f"(TP {entry_price - (required_reward - reward):+.5f})"
+                    )
+                # Recalculate ratio with new TP
+                reward = abs(take_profit - entry_price)
+                rr_ratio = reward / risk if risk > 0 else 0
+                log_narration(
+                    event_type="RR_ESCALATION",
+                    details={
+                        "original_rr": reward / risk if risk > 0 else 0,
+                        "escalated_rr": rr_ratio,
+                        "target": self.min_rr_ratio,
+                        "symbol": symbol
+                    },
+                    symbol=symbol,
+                    venue="oanda"
+                )
+            
             # Use small tolerance for floating point comparison
             if rr_ratio < (self.min_rr_ratio - 0.01):
                 self.display.error(f"❌ CHARTER VIOLATION: R:R {rr_ratio:.2f} < {self.min_rr_ratio}")
@@ -1118,6 +1182,25 @@ class OandaTradingEngine:
                             self.display.warning("⚠️  Position registry update failed (may already exist)")
                     except Exception as e:
                         self.display.warning(f"⚠️  Could not register position: {e}")
+                
+                # ========================================================================
+                # 📊 ADD POSITION TO DASHBOARD (Real-time monitoring)
+                # ========================================================================
+                try:
+                    strategy_name = ",".join(agg.detectors_fired) if agg and hasattr(agg, 'detectors_fired') else "unknown"
+                    self.dashboard.add_position(
+                        symbol=symbol,
+                        strategy=strategy_name,
+                        direction=direction,
+                        entry_price=entry_price,
+                        units=abs(units),
+                        stop_loss=stop_loss,
+                        take_profit=take_profit,
+                        current_price=entry_price,
+                    )
+                    self.display.success(f"📊 {symbol} added to position dashboard (monitoring every 60s)")
+                except Exception as e:
+                    self.display.warning(f"⚠️  Dashboard update failed: {e}")
                 
                 self.total_trades += 1
                 
@@ -1987,6 +2070,14 @@ class OandaTradingEngine:
                 
                 # Fast rescan while slots remain; slow only when full.
                 open_count_now = len(self.active_positions)
+                
+                # ── DASHBOARD: Display position summary and system health ───────
+                try:
+                    if self.dashboard and os.getenv('RBOT_DASHBOARD_ACTIVE', 'true').lower() != 'false':
+                        self.dashboard.sync_and_display()
+                except Exception as _dashboard_err:
+                    self.display.warning(f"⚠️ Dashboard render error: {_dashboard_err}")
+                
                 if open_count_now >= MAX_POSITIONS:
                     self.display.alert(
                         f"Positions full ({open_count_now}/{MAX_POSITIONS}) — "
