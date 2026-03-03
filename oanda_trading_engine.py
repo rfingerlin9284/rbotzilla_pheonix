@@ -281,6 +281,31 @@ class OandaTradingEngine:
         self.trade_manager_active = False  # Track if trade manager is running
         self.trade_manager_last_heartbeat = None  # Last time trade manager was active
 
+        # ========================================================================
+        # CONNECTION RESILIENCE & AUTO-RECONNECT SYSTEM (NEW FEATURE)
+        # ========================================================================
+        self.connection_state = {
+            'connected': True,
+            'last_healthy_check': datetime.now(timezone.utc),
+            'consecutive_failures': 0,
+            'reconnect_attempt': 0,
+            'last_reconnect_time': None,
+            'connection_loss_time': None,
+            'is_reconnecting': False,
+            'last_error': None
+        }
+        
+        self.reconnect_config = {
+            'initial_wait_seconds': 2,
+            'max_wait_seconds': 300,  # 5 minutes max between retries
+            'exponential_base': 2,
+            'max_reconnect_attempts': 0,  # 0 = unlimited automatic retries
+            'health_check_interval': 30,  # seconds between connection checks
+            'failure_threshold': 3  # consecutive failures before reconnect attempt
+        }
+        
+        self.display.success("✅ Connection resilience & auto-reconnect ENABLED")
+
         # Wire tight trailing overrides (rbz_tight_trailing.py reference)
         if RBZ_TRAILING_AVAILABLE:
             try:
@@ -372,6 +397,172 @@ class OandaTradingEngine:
         
         self.display.divider()
         print()
+    
+    def is_connection_healthy(self) -> bool:
+        """Check if API connection is healthy"""
+        try:
+            # Attempt a simple API call to verify connection
+            account_info = self.oanda.get_account_info()
+            if account_info is not None:
+                self.connection_state['last_healthy_check'] = datetime.now(timezone.utc)
+                return True
+            return False
+        except Exception as e:
+            self.connection_state['last_error'] = str(e)
+            return False
+    
+    async def handle_connection_loss(self, error: str):
+        """Handle connection loss with automatic reconnection"""
+        self.connection_state['connected'] = False
+        self.connection_state['consecutive_failures'] += 1
+        self.connection_state['last_error'] = error
+        
+        if not self.connection_state['connection_loss_time']:
+            self.connection_state['connection_loss_time'] = datetime.now(timezone.utc)
+        
+        self.display.alert(
+            f"⚠️  CONNECTION LOST (Attempt #{self.connection_state['reconnect_attempt'] + 1}): {error}",
+            "WARNING"
+        )
+        
+        log_narration(
+            event_type="CONNECTION_LOST",
+            details={
+                "error": error,
+                "attempt": self.connection_state['reconnect_attempt'] + 1,
+                "consecutive_failures": self.connection_state['consecutive_failures'],
+                "will_auto_reconnect": True
+            },
+            symbol="SYSTEM",
+            venue="connection_manager"
+        )
+    
+    async def attempt_reconnect(self) -> bool:
+        """Attempt to reconnect to OANDA API with exponential backoff"""
+        if self.connection_state['is_reconnecting']:
+            return False  # Already attempting to reconnect
+        
+        self.connection_state['is_reconnecting'] = True
+        self.connection_state['reconnect_attempt'] += 1
+        
+        # Calculate exponential backoff wait time
+        wait_time = min(
+            self.reconnect_config['initial_wait_seconds'] * (
+                self.reconnect_config['exponential_base'] ** 
+                (self.connection_state['reconnect_attempt'] - 1)
+            ),
+            self.reconnect_config['max_wait_seconds']
+        )
+        
+        self.display.warning(
+            f"🔄 Reconnect attempt #{self.connection_state['reconnect_attempt']} "
+            f"in {wait_time:.0f} seconds... (exponential backoff)"
+        )
+        
+        # Wait before attempting reconnection
+        await asyncio.sleep(wait_time)
+        
+        # Attempt to reconnect
+        try:
+            self.display.alert("🔌 Attempting to reconnect to OANDA API...", "INFO")
+            
+            # Reinitialize the connector
+            self.oanda = OandaConnector(environment=self.environment)
+            
+            # Verify connection is healthy
+            if self.is_connection_healthy():
+                self.connection_state['connected'] = True
+                self.connection_state['consecutive_failures'] = 0
+                self.connection_state['reconnect_attempt'] = 0
+                self.connection_state['last_reconnect_time'] = datetime.now(timezone.utc)
+                self.connection_state['connection_loss_time'] = None
+                self.connection_state['is_reconnecting'] = False
+                
+                # Sync open positions after reconnection
+                self._sync_open_positions()
+                
+                downtime = (datetime.now(timezone.utc) - self.connection_state['last_reconnect_time']).total_seconds()
+                self.display.success(
+                    f"✅ RECONNECTED to OANDA API successfully! (Resumed after {downtime:.0f}s downtime)"
+                )
+                
+                log_narration(
+                    event_type="CONNECTION_RESTORED",
+                    details={
+                        "attempt": self.connection_state['reconnect_attempt'],
+                        "positions_synced": len(self.active_positions)
+                    },
+                    symbol="SYSTEM",
+                    venue="connection_manager"
+                )
+                
+                return True
+            else:
+                raise RuntimeError("Connection health check failed after reconnect")
+                
+        except Exception as e:
+            self.connection_state['is_reconnecting'] = False
+            self.connection_state['last_error'] = str(e)
+            
+            # Check if max reconnect attempts exceeded (0 = unlimited)
+            if (self.reconnect_config['max_reconnect_attempts'] > 0 and 
+                self.connection_state['reconnect_attempt'] >= self.reconnect_config['max_reconnect_attempts']):
+                
+                self.display.error(
+                    f"❌ RECONNECTION FAILED after {self.connection_state['reconnect_attempt']} attempts. "
+                    f"Max retries exceeded. Stopping bot."
+                )
+                
+                log_narration(
+                    event_type="MAX_RECONNECT_ATTEMPTS_EXCEEDED",
+                    details={
+                        "attempts": self.connection_state['reconnect_attempt'],
+                        "max_allowed": self.reconnect_config['max_reconnect_attempts'],
+                        "error": str(e)
+                    },
+                    symbol="SYSTEM",
+                    venue="connection_manager"
+                )
+                
+                self.is_running = False
+                return False
+            
+            # Will retry on next cycle
+            return False
+    
+    async def monitor_connection_health(self):
+        """Background task to periodically check connection health"""
+        while self.is_running:
+            try:
+                # Check connection every N seconds
+                await asyncio.sleep(self.reconnect_config['health_check_interval'])
+                
+                if not self.is_connection_healthy():
+                    self.connection_state['consecutive_failures'] += 1
+                    
+                    if self.connection_state['consecutive_failures'] >= self.reconnect_config['failure_threshold']:
+                        await self.handle_connection_loss(
+                            f"Connection health check failed "
+                            f"({self.connection_state['consecutive_failures']} consecutive failures)"
+                        )
+                        
+                        # Attempt reconnection
+                        reconnected = await self.attempt_reconnect()
+                        if not reconnected and self.is_running:
+                            # Will retry on next health check
+                            pass
+                else:
+                    # Connection is healthy, reset failure counter
+                    if self.connection_state['consecutive_failures'] > 0:
+                        self.display.success(f"✅ Connection restored to healthy state")
+                    self.connection_state['consecutive_failures'] = 0
+                    self.connection_state['connected'] = True
+                    
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self.display.error(f"Error in connection health monitor: {e}")
+                await asyncio.sleep(5)
     
     def get_current_price(self, pair):
         """Get current real-time price from OANDA API (environment-agnostic)"""
@@ -2074,6 +2265,10 @@ class OandaTradingEngine:
         # Start TradeManager background task
         trade_manager_task = asyncio.create_task(self.trade_manager_loop())
         
+        # Start Connection Health Monitor background task
+        health_monitor_task = asyncio.create_task(self.monitor_connection_health())
+        self.display.success("✅ Health monitor task started - auto-reconnect ACTIVE")
+        
         while self.is_running:
             try:
                 # AUTOMATED POSITION POLICE SWEEP (every 15 minutes)
@@ -2298,18 +2493,42 @@ class OandaTradingEngine:
                     await asyncio.sleep(self.scan_fast_seconds)
                 
             except KeyboardInterrupt:
-                self.display.warning("\nStopping trading engine...")
+                self.display.warning("\n⏹️  Stopping trading engine gracefully...")
                 self.is_running = False
+                log_narration(
+                    event_type="BOT_STOPPED_BY_USER",
+                    details={"timestamp": datetime.now(timezone.utc).isoformat()},
+                    symbol="SYSTEM",
+                    venue="trading_loop"
+                )
                 break
             except Exception as e:
-                self.display.error(f"Error in trading loop: {e}")
-                await asyncio.sleep(10)
+                self.display.error(f"❌ Error in trading loop: {e}")
+                
+                # Attempt automatic reconnection
+                await self.handle_connection_loss(str(e))
+                
+                if self.is_running:
+                    # Try to reconnect before continuing
+                    reconnected = await self.attempt_reconnect()
+                    if not reconnected and self.is_running:
+                        # Calculate wait time with exponential backoff
+                        wait_time = min(
+                            self.reconnect_config['initial_wait_seconds'] * (
+                                self.reconnect_config['exponential_base'] ** 
+                                (self.connection_state['reconnect_attempt'] - 1)
+                            ),
+                            self.reconnect_config['max_wait_seconds']
+                        )
+                        self.display.warning(f"⏳ Waiting {wait_time:.0f}s before next reconnect attempt...")
+                        await asyncio.sleep(wait_time)
         
         self.display.section("SESSION COMPLETE")
         self._display_stats()
         # Cancel trade manager task
         try:
             trade_manager_task.cancel()
+            health_monitor_task.cancel()
         except Exception:
             pass
 
