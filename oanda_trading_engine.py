@@ -414,6 +414,49 @@ class OandaTradingEngine:
         self.display.divider()
         print()
     
+    def update_bot_status(self):
+        """Update bot status awareness - knows if it's trading or not"""
+        current_time = datetime.now(timezone.utc)
+        uptime = (current_time - self.session_start).total_seconds()
+        
+        self.bot_status['session_uptime_seconds'] = uptime
+        self.bot_status['positions_open'] = len(self.active_positions)
+        self.bot_status['is_trading'] = self.is_running and len(self.active_positions) > 0
+        
+        if self.is_running:
+            if len(self.active_positions) > 0:
+                self.bot_status['status_message'] = f"🟢 TRADING ACTIVE ({len(self.active_positions)} positions)"
+            else:
+                self.bot_status['status_message'] = "🟡 SCANNING (waiting for signals)"
+        else:
+            self.bot_status['status_message'] = "🔴 BOT STOPPED"
+        
+        return self.bot_status
+    
+    def report_bot_status(self):
+        """Print bot status report"""
+        status = self.update_bot_status()
+        
+        print("\n" + "="*80)
+        print(f"📊 BOT STATUS AWARENESS")
+        print("="*80)
+        print(f"  Engine Status:           {status['status_message']}")
+        print(f"  Is Trading:              {status['is_trading']}")
+        print(f"  Connected:               {status['connected']}")
+        print(f"  Open Positions:          {status['positions_open']}")
+        print(f"  Session Uptime:          {int(status['session_uptime_seconds'])}s")
+        print(f"  Total Signals Scanned:   {status['total_signals_scanned']}")
+        print(f"  Total Positions Opened:  {status['total_positions_opened']}")
+        print("="*80 + "\n")
+    
+    def is_actively_trading(self) -> bool:
+        """Check if bot is actively trading (has open positions)"""
+        return self.is_running and len(self.active_positions) > 0
+    
+    def get_current_status(self) -> dict:
+        """Get current bot status as dictionary"""
+        return self.update_bot_status()
+    
     def is_connection_healthy(self) -> bool:
         """Check if API connection is healthy"""
         try:
@@ -579,43 +622,6 @@ class OandaTradingEngine:
             except Exception as e:
                 self.display.error(f"Error in connection health monitor: {e}")
                 await asyncio.sleep(5)
-    
-    def update_bot_status(self):
-        """Update bot status awareness - knows if it's trading or not"""
-        try:
-            # Update basic status
-            self.bot_status['is_trading'] = self.is_running and len(self.active_positions) > 0
-            self.bot_status['connected'] = self.connection_state.get('connected', True)
-            self.bot_status['positions_open'] = len(self.active_positions)
-            self.bot_status['session_uptime_seconds'] = (datetime.now(timezone.utc) - self.session_start).total_seconds()
-            
-            # Update status message
-            if not self.is_running:
-                self.bot_status['status_message'] = '🔴 BOT STOPPED'
-            elif not self.bot_status['connected']:
-                self.bot_status['status_message'] = f"⚠️  RECONNECTING (Attempt #{self.connection_state.get('reconnect_attempt', 0)})"
-            elif self.bot_status['is_trading']:
-                self.bot_status['status_message'] = f"🟢 ACTIVELY TRADING ({self.bot_status['positions_open']} positions open)"
-            elif self.is_running:
-                self.bot_status['status_message'] = f"🟡 RUNNING (Scanning for signals, 0 positions)"
-            else:
-                self.bot_status['status_message'] = '⚪ IDLE'
-                
-        except Exception as e:
-            self.display.warning(f"⚠️  Error updating bot status: {e}")
-    
-    def get_bot_status(self) -> Dict:
-        """Get current bot status awareness"""
-        self.update_bot_status()
-        return self.bot_status.copy()
-    
-    def is_bot_actively_trading(self) -> bool:
-        """Check if bot is ACTIVELY TRADING (has open positions and is running)"""
-        return self.bot_status.get('is_trading', False)
-    
-    def get_status_message(self) -> str:
-        """Get human-readable status message"""
-        return self.bot_status.get('status_message', 'UNKNOWN')
     
     def get_current_price(self, pair):
         """Get current real-time price from OANDA API (environment-agnostic)"""
@@ -2308,6 +2314,8 @@ class OandaTradingEngine:
         trade_count = 0
         last_police_sweep = time.time()  # Track last Position Police sweep
         police_sweep_interval = 900  # 15 minutes (M15 charter compliance)
+        last_status_report = time.time()  # Track last status report
+        status_report_interval = 300  # Report bot status every 5 minutes
         
         # Sync any trades already open on the broker before the manager starts
         self._sync_open_positions()
@@ -2322,8 +2330,24 @@ class OandaTradingEngine:
         health_monitor_task = asyncio.create_task(self.monitor_connection_health())
         self.display.success("✅ Health monitor task started - auto-reconnect ACTIVE")
         
+        # Initial status awareness
+        self.bot_status['engine_initialized'] = True
+        self.bot_status['connected'] = True
+        self.display.success("✅ BOT STATUS AWARENESS: ACTIVE")
+        self.report_bot_status()
+        
         while self.is_running:
             try:
+                # UPDATE BOT STATUS (every loop iteration)
+                self.update_bot_status()
+                
+                # PERIODIC STATUS REPORT (every 5 minutes)
+                current_time_status = time.time()
+                if current_time_status - last_status_report >= status_report_interval:
+                    self.display.section(f"📊 BOT STATUS UPDATE - Is Trading: {self.bot_status['is_trading']}")
+                    self.bot_status['total_signals_scanned'] += 1
+                    last_status_report = current_time_status
+                
                 # AUTOMATED POSITION POLICE SWEEP (every 15 minutes)
                 current_time = time.time()
                 if current_time - last_police_sweep >= police_sweep_interval:
@@ -2337,9 +2361,6 @@ class OandaTradingEngine:
                 
                 # Check existing positions
                 self.check_positions()
-                
-                # Update bot status awareness (knows if trading or not)
-                self.update_bot_status()
 
                 # Refresh gate NAV from live account balance each cycle
                 try:
