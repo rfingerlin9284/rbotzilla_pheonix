@@ -14,9 +14,9 @@ from pathlib import Path
 class MarginConfig:
     """Margin usage configuration"""
     # Risk per trade (as % of account)
-    risk_per_trade_min: float = 0.05  # 0.5% minimum
-    risk_per_trade_target: float = 0.10  # 1.0% target
-    risk_per_trade_max: float = 0.15  # 1.5% aggressive maximum
+    risk_per_trade_min: float = 0.10  # 1.0% minimum (OPTIMIZED for $200-500/day)
+    risk_per_trade_target: float = 0.15  # 1.5% target (AGGRESSIVE - larger positions)
+    risk_per_trade_max: float = 0.20  # 2.0% maximum (respects 35% margin cap)
     
     # Position sizing
     max_position_size_percent: float = 0.15  # Max 15% of account per symbol

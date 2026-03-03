@@ -234,14 +234,14 @@ class OandaTradingEngine:
         self.scan_slow_seconds = int(os.getenv('RBOT_SCAN_SLOW_SECONDS', '300'))
         
         # Confidence gate — reject signals below this threshold
-        # Reference: PATCH_PROPOSAL MIN_CONFIDENCE = 0.55
-        self.min_confidence = 0.55
+        # Updated for quality filtering: only 76%+ signals (ema_stack, fibonacci, fvg)
+        self.min_confidence = 0.76
 
         # ── Multi-signal scan config (env-overridable) ────────────────────────
         # min_signal_confidence: final selection gate (above min_confidence)
         # max_new_trades_per_cycle: hard cap on new orders per loop iteration
         # scan_log_top_n: how many candidates/rejects to print each cycle
-        self.min_signal_confidence  = float(os.getenv('RBOT_MIN_SIGNAL_CONFIDENCE',  '0.62'))
+        self.min_signal_confidence  = float(os.getenv('RBOT_MIN_SIGNAL_CONFIDENCE',  '0.76'))
         self.max_new_trades_per_cycle = int(os.getenv('RBOT_MAX_NEW_TRADES_PER_CYCLE', '3'))
         self.scan_log_top_n         = int(os.getenv('RBOT_SCAN_LOG_TOP_N',           '8'))
         

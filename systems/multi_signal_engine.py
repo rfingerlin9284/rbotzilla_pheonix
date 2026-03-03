@@ -661,7 +661,7 @@ def scan_symbol(
     symbol: str,
     candles: list,
     utc_now: Optional[datetime] = None,
-    min_confidence: float = 0.55,
+    min_confidence: float = 0.76,
     min_votes: int = _MIN_VOTES,
 ) -> Optional[AggregatedSignal]:
     """
