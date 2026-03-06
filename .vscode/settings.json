@@ -1,0 +1,8 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^cd /home/rfing/RBOTZILLA_PHOENIX && source venv/bin/activate && python - <<'PY'\nimport json\nfrom datetime import datetime\npath='narration\\.jsonl'\nstart=datetime\\.fromisoformat\\('2026-03-04T23:50:00\\+00:00'\\)\nend=datetime\\.fromisoformat\\('2026-03-05T01:30:00\\+00:00'\\)\nfor line in open\\(path,'r',encoding='utf-8'\\):\n    try: ev=json\\.loads\\(line\\)\n    except: continue\n    ts=ev\\.get\\('timestamp'\\)\n    if not ts: continue\n    dt=datetime\\.fromisoformat\\(ts\\.replace\\('Z','\\+00:00'\\)\\)\n    if not\\(start<=dt<=end\\): continue\n    et=ev\\.get\\('event_type',''\\)\n    if et in \\('TRADE_OPENED','SL_MOVED_BE','TRAIL_TIGHT_SET','TRAILING_SL_UPDATED','HARD_DOLLAR_STOP','FORCED_CLOSE'\\) and \\(ev\\.get\\('symbol'\\)=='USD_JPY' or \\(ev\\.get\\('details'\\) or \\{\\}\\)\\.get\\('symbol'\\)=='USD_JPY'\\):\n        d=ev\\.get\\('details'\\) or \\{\\}\n        print\\(ts,et,'tid=',d\\.get\\('trade_id'\\) or d\\.get\\('order_id'\\),'new_sl=',d\\.get\\('new_sl'\\) or d\\.get\\('set_stop'\\),'entry=',d\\.get\\('entry'\\) or d\\.get\\('entry_price'\\)\\)\nPY$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}

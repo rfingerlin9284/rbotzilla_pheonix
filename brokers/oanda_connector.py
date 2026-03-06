@@ -183,6 +183,46 @@ class OandaConnector:
             self.logger.warning("Practice OANDA credentials not configured - trading disabled until credentials are set")
         else:
             self.logger.info(f"OANDA {self.environment} credentials validated")
+
+    def _extract_trade_id_from_order_response(self, payload: Dict[str, Any]) -> str:
+        """Best-effort extraction of broker trade id from OANDA order response payload."""
+        if not isinstance(payload, dict):
+            return ""
+
+        candidates = [
+            payload.get("orderFillTransaction"),
+            payload.get("orderCreateTransaction"),
+            payload.get("relatedTransaction"),
+        ]
+
+        for node in candidates:
+            if not isinstance(node, dict):
+                continue
+
+            trade_opened = node.get("tradeOpened") if isinstance(node.get("tradeOpened"), dict) else {}
+            trade_reduced = node.get("tradeReduced") if isinstance(node.get("tradeReduced"), dict) else {}
+            trade_closed = node.get("tradesClosed")
+
+            for value in (
+                trade_opened.get("tradeID"),
+                trade_opened.get("id"),
+                trade_reduced.get("tradeID"),
+                trade_reduced.get("id"),
+                node.get("tradeID"),
+                node.get("tradeId"),
+            ):
+                if value is not None and str(value).strip():
+                    return str(value).strip()
+
+            if isinstance(trade_closed, list):
+                for closed in trade_closed:
+                    if not isinstance(closed, dict):
+                        continue
+                    value = closed.get("tradeID") or closed.get("id")
+                    if value is not None and str(value).strip():
+                        return str(value).strip()
+
+        return ""
     
     def place_oco_order(self, instrument: str, entry_price: float, stop_loss: float, 
                        take_profit: float, units: int, ttl_hours: float = 24.0, 
@@ -381,6 +421,7 @@ class OandaConnector:
                 if response["success"]:
                     order_result = response["data"]
                     order_id = order_result.get("orderCreateTransaction", {}).get("id")
+                    trade_id = self._extract_trade_id_from_order_response(order_result)
                     
                     # Log successful LIVE OCO placement
                     self.logger.info(
@@ -394,6 +435,7 @@ class OandaConnector:
                         event_type="OCO_PLACED",
                         details={
                             "order_id": order_id,
+                            "trade_id": trade_id,
                             "entry_price": entry_price,
                             "stop_loss": stop_loss,
                             "take_profit": take_profit,
@@ -427,6 +469,7 @@ class OandaConnector:
                     return {
                         "success": True,
                         "order_id": order_id,
+                        "trade_id": trade_id,
                         "instrument": instrument,
                         "entry_price": entry_price,
                         "stop_loss": stop_loss,
@@ -478,6 +521,7 @@ class OandaConnector:
                 if response["success"]:
                     order_result = response["data"]
                     order_id = order_result.get("orderCreateTransaction", {}).get("id")
+                    trade_id = self._extract_trade_id_from_order_response(order_result)
                     
                     # Log successful PRACTICE OCO placement
                     self.logger.info(
@@ -491,6 +535,7 @@ class OandaConnector:
                         event_type="OCO_PLACED",
                         details={
                             "order_id": order_id,
+                            "trade_id": trade_id,
                             "entry_price": entry_price,
                             "stop_loss": stop_loss,
                             "take_profit": take_profit,
@@ -511,6 +556,7 @@ class OandaConnector:
                     return {
                         "success": True,
                         "order_id": order_id,
+                        "trade_id": trade_id,
                         "instrument": instrument,
                         "entry_price": entry_price,
                         "stop_loss": stop_loss,
@@ -661,6 +707,31 @@ class OandaConnector:
             "environment": self.environment,
             "account_id": self.account_id[-4:] if self.account_id else "N/A"
         }
+
+    def get_account_info(self) -> Optional[OandaAccount]:
+        """Get OANDA account summary information."""
+        try:
+            endpoint = f"/v3/accounts/{self.account_id}/summary"
+            resp = self._make_request("GET", endpoint)
+            if not resp.get("success"):
+                self.logger.error(f"Failed to get account info: {resp.get('error')}")
+                return None
+
+            payload = resp.get("data") or {}
+            account = payload.get("account") if isinstance(payload.get("account"), dict) else {}
+            return OandaAccount(
+                account_id=account.get("id", ""),
+                currency=account.get("currency", ""),
+                balance=float(account.get("balance", 0) or 0),
+                unrealized_pl=float(account.get("unrealizedPL", 0) or 0),
+                margin_used=float(account.get("marginUsed", 0) or 0),
+                margin_available=float(account.get("marginAvailable", 0) or 0),
+                open_positions=int(account.get("openPositionCount", 0) or 0),
+                open_trades=int(account.get("openTradeCount", 0) or 0),
+            )
+        except Exception as e:
+            self.logger.error(f"Error getting account info: {e}")
+            return None
 
     # --- Convenience management API helpers -------------------------------------------------
     def get_orders(self, state: str = "PENDING") -> List[Dict[str, Any]]:
@@ -816,6 +887,25 @@ class OandaConnector:
             return resp
         except Exception as e:
             self.logger.error(f"Failed to set stop for trade {trade_id}: {e}")
+            return {"success": False, "error": str(e)}
+
+    def close_trade(self, trade_id: str) -> Dict[str, Any]:
+        """Close an entire open trade by trade id."""
+        try:
+            endpoint = f"/v3/accounts/{self.account_id}/trades/{trade_id}/close"
+            return self._make_request("PUT", endpoint, {})
+        except Exception as e:
+            self.logger.error(f"Failed to close trade {trade_id}: {e}")
+            return {"success": False, "error": str(e)}
+
+    def close_trade_partial(self, trade_id: str, units: int) -> Dict[str, Any]:
+        """Close part of an open trade by units."""
+        try:
+            endpoint = f"/v3/accounts/{self.account_id}/trades/{trade_id}/close"
+            payload = {"units": str(abs(int(units)))}
+            return self._make_request("PUT", endpoint, payload)
+        except Exception as e:
+            self.logger.error(f"Failed to partially close trade {trade_id}: {e}")
             return {"success": False, "error": str(e)}
 
 # Convenience functions

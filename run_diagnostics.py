@@ -131,7 +131,7 @@ def check_quant_hedging() -> Tuple[bool, str]:
     try:
         from util.quant_hedge_engine import QuantHedgeEngine
         engine = QuantHedgeEngine()
-        return True, f"Correlation matrix loaded (5 pairs: EUR, GBP, JPY, AUD, CAD)"
+        return True, "Correlation matrix loaded (EUR, GBP, JPY, AUD, CAD clusters)"
     except Exception as e:
         return False, f"Hedging error: {str(e)[:50]}"
 

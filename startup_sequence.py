@@ -140,7 +140,7 @@ class StartupSequence:
         self.confirm(
             "Trading Pair Universe",
             True,
-            "EUR_USD, GBP_USD, USD_JPY, AUD_USD, USD_CAD (5 pairs, highest liquidity)"
+            "Expanded majors + liquid crosses (default 23 pairs, env-overridable)"
         )
         
         self.confirm(

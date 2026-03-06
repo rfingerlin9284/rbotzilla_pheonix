@@ -22,6 +22,7 @@ PIN: 841921
 
 from __future__ import annotations
 import math
+import os
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 
@@ -590,6 +591,146 @@ def detect_rsi_extremes(symbol: str, candles: list) -> Optional[SignalResult]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 8. Mean Reversion (Bollinger Bands) Detector
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _stddev(seq: list[float], mean: float) -> float:
+    if not seq:
+        return 0.0
+    var = sum((x - mean) ** 2 for x in seq) / len(seq)
+    return math.sqrt(var)
+
+def detect_mean_reversion_bb(symbol: str, candles: list) -> Optional[SignalResult]:
+    """
+    Mean Reversion using Bollinger Bands.
+    Buy when price drops below lower BB and starts rising.
+    Sell when price spikes above upper BB and starts dropping.
+    """
+    closes = _closes(candles)[-22:]
+    if len(closes) < 21:
+        return None
+        
+    current_price = closes[-1]
+    prev_price = closes[-2]
+    
+    # Calculate BB for the previous candle to check for piercing
+    basis_seq = closes[-21:-1]
+    basis = _sma(basis_seq, 20)
+    dev = _stddev(basis_seq, basis)
+    upper_bb = basis + (2.0 * dev)
+    lower_bb = basis - (2.0 * dev)
+    
+    pip = _pip_size(symbol)
+    
+    direction = None
+    conf = 0.0
+    
+    # Buy signal: previous candle pierced lower band, current price is moving up
+    if prev_price <= lower_bb and current_price > prev_price:
+        direction = "BUY"
+        # Confidence scales with how far outside the bands it went
+        pierce_dist = lower_bb - prev_price
+        conf = min(0.85, 0.60 + (pierce_dist / (10 * pip)) * 0.05)
+        
+    # Sell signal: previous candle pierced upper band, current price is moving down
+    elif prev_price >= upper_bb and current_price < prev_price:
+        direction = "SELL"
+        pierce_dist = prev_price - upper_bb
+        conf = min(0.85, 0.60 + (pierce_dist / (10 * pip)) * 0.05)
+        
+    if not direction:
+        return None
+        
+    # Targets for mean reversion: TP is the middle band (basis), SL is tight
+    dist_to_basis = abs(current_price - basis)
+    if dist_to_basis < 8 * pip: 
+        return None # Not enough meat on the bone
+        
+    sl_dist = 12 * pip
+    if direction == "BUY":
+        sl = current_price - sl_dist
+        tp = basis
+    else:
+        sl = current_price + sl_dist
+        tp = basis
+        
+    return SignalResult("mean_reversion_bb", direction, conf, current_price, sl, tp,
+                        {"upper_bb": upper_bb, "lower_bb": lower_bb, "basis": basis})
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 9. Aggressive Shorting (Order Block) Detector
+# ─────────────────────────────────────────────────────────────────────────────
+
+def detect_aggressive_shorting_ob(symbol: str, candles: list) -> Optional[SignalResult]:
+    """
+    Aggressively hunts for Bearish Order Blocks to short into.
+    Looks for a rapid down-move (displacement) breaking structure, then shorts the retracement.
+    """
+    highs = _highs(candles)
+    lows = _lows(candles)
+    closes = _closes(candles)
+    
+    if len(closes) < 30 or len(highs) < 30 or len(lows) < 30:
+        return None
+        
+    pip = _pip_size(symbol)
+    price = closes[-1]
+    
+    # Look back 20 candles for a large bearish displacement
+    best_ob_high = 0.0
+    best_ob_low = 0.0
+    highest_displacement = 0.0
+    
+    n_candles = len(closes)
+    for i in range(n_candles - 25, n_candles - 5):
+        # Look for a strong down candle
+        c = candles[i]
+        c_open_val = None
+        if isinstance(c, dict):
+            c_open_val = c.get("mid", {}).get("o") or c.get("o")
+        
+        if not c_open_val:
+            continue
+        c_open = float(c_open_val)
+        c_close = closes[i]
+        
+        # Check if it's a strong bear candle
+        if c_close < c_open:
+            body = c_open - c_close
+            
+            # Require minimum 15 pip displacement
+            if body > 15 * pip and body > highest_displacement:
+                # The Order Block is the last up-candle before this down-move
+                # Try finding it in the 3 preceding candles
+                for j in range(1, 4):
+                    if i-j >= 0:
+                        prev_c = candles[i-j]
+                        j_open_raw = None
+                        if isinstance(prev_c, dict):
+                            j_open_raw = prev_c.get("mid", {}).get("o") or prev_c.get("o")
+                        
+                        if j_open_raw:
+                            j_open = float(j_open_raw)
+                            j_close = closes[i-j]
+                            
+                            if j_close > j_open: # Bullish candle = OB
+                                best_ob_high = float(highs[i-j])
+                                best_ob_low = float(lows[i-j])
+                                highest_displacement = body
+                                break
+                                
+    # If we found a valid Bearish Order Block and price is retracing into it
+    if best_ob_high > 0 and best_ob_low <= price <= best_ob_high:
+        conf = 0.88 # Very high confidence for OB retracements
+        sl = best_ob_high + 5 * pip # Stop just above the OB
+        tp = price - (highest_displacement * 1.5) # Target 1.5x the displacement 
+        
+        return SignalResult("aggressive_short_ob", "SELL", conf, price, sl, tp,
+                            {"ob_high": best_ob_high, "ob_low": best_ob_low, "displacement": highest_displacement})
+                            
+    return None
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Multi-Signal Aggregator
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -601,6 +742,8 @@ DETECTORS = [
     detect_liquidity_sweep,
     detect_trap_reversal,
     detect_rsi_extremes,
+    detect_mean_reversion_bb,
+    detect_aggressive_shorting_ob,
 ]
 
 # Minimum individual confidence to count as a "vote"
@@ -661,7 +804,7 @@ def scan_symbol(
     symbol: str,
     candles: list,
     utc_now: Optional[datetime] = None,
-    min_confidence: float = 0.76,
+    min_confidence: float = 0.75,
     min_votes: int = _MIN_VOTES,
 ) -> Optional[AggregatedSignal]:
     """
@@ -739,8 +882,8 @@ def scan_symbol(
 
 class TradeAction:
     HOLD           = "HOLD"
-    SCALE_OUT_HALF = "SCALE_OUT_HALF"   # close 50% at 1R
-    TRAIL_TIGHT    = "TRAIL_TIGHT"      # tighten trail at 2R
+    SCALE_OUT_HALF = "SCALE_OUT_HALF"   # close 50% at configured R
+    TRAIL_TIGHT    = "TRAIL_TIGHT"      # tighten trail at configured R
     CLOSE_ALL      = "CLOSE_ALL"        # full exit
     MOVE_BE        = "MOVE_BE"          # move SL to breakeven
 
@@ -759,13 +902,42 @@ def manage_open_trade(
     """
     Given current price on an open trade, returns (action, detail_dict).
 
-    Logic:
-      • 0.5R profit  → Move SL to breakeven
-      • 1.0R profit  → Scale out 50% (if not already done)
-      • 2.0R profit  → Activate tight trail (trail at 0.3R behind)
-      • Price crosses back through prior trail level → Close all
-      • Session ends (off_session) → Close all (prevent overnight drift)
+        Logic:
+            • BE threshold R profit     → Move SL to breakeven
+            • SCALE threshold R profit  → Scale out 50% (if not already done)
+            • TRAIL threshold R profit  → Activate tight trail (trail at TRAIL_DIST_R × risk)
+            • Price crosses back through prior trail level → Close all
+            • Session ends (off_session) → Close all (prevent overnight drift)
     """
+    be_r_threshold = float(os.getenv("RBOT_BE_TRIGGER_R", "0.30"))
+    scale_r_threshold = float(os.getenv("RBOT_SCALE_OUT_TRIGGER_R", "1.00"))
+    trail_r_threshold = float(os.getenv("RBOT_TRAIL_TRIGGER_R", "1.25"))
+    trail_dist_r = float(os.getenv("RBOT_TRAIL_DISTANCE_R", "0.25"))
+
+    profit_extraction_mode = os.getenv("RBOT_PROFIT_EXTRACTION_MODE", "1") == "1"
+    session_name = str(session or "").lower()
+
+    if profit_extraction_mode:
+        if session_name in {"overlap", "london", "new_york"}:
+            be_r_threshold *= 0.85
+            scale_r_threshold *= 0.85
+            trail_r_threshold *= 0.90
+            trail_dist_r *= 0.90
+        elif session_name == "tokyo":
+            be_r_threshold *= 0.90
+            scale_r_threshold *= 0.90
+            trail_r_threshold *= 0.95
+        elif session_name == "off_session":
+            be_r_threshold *= 0.75
+            scale_r_threshold *= 0.80
+            trail_r_threshold *= 0.85
+            trail_dist_r *= 0.85
+
+    be_r_threshold = max(0.05, be_r_threshold)
+    scale_r_threshold = max(be_r_threshold, scale_r_threshold)
+    trail_r_threshold = max(scale_r_threshold, trail_r_threshold)
+    trail_dist_r = max(0.05, min(trail_dist_r, 1.0))
+
     risk = abs(entry - sl)
     if risk < 1e-9:
         return (TradeAction.HOLD, {})
@@ -780,10 +952,16 @@ def manage_open_trade(
         "current": current_price,
         "entry": entry,
         "sl": sl,
+        "be_r_threshold": round(be_r_threshold, 3),
+        "scale_r_threshold": round(scale_r_threshold, 3),
+        "trail_r_threshold": round(trail_r_threshold, 3),
+        "trail_dist_r": round(trail_dist_r, 3),
+        "profit_extraction_mode": profit_extraction_mode,
+        "session": session_name or "unknown",
     }
 
     # Session ended → protect profits
-    if session == "off_session" and pnl_r > 0.5:
+    if session == "off_session" and pnl_r > be_r_threshold:
         detail["reason"] = "session_ended_with_profit"
         return (TradeAction.CLOSE_ALL, detail)
 
@@ -792,21 +970,21 @@ def manage_open_trade(
         detail["reason"] = "stop_breach"
         return (TradeAction.CLOSE_ALL, detail)
 
-    # 2R+ → tight trail
-    if pnl_r >= 2.0 and not trail_active:
-        detail["reason"] = "2R_trail_activate"
-        detail["new_sl"] = current_price - 0.3 * risk if direction == "BUY" \
-                           else current_price + 0.3 * risk
+    # Configured R+ → tight trail
+    if pnl_r >= trail_r_threshold and not trail_active:
+        detail["reason"] = f"{trail_r_threshold:.2f}R_trail_activate"
+        detail["new_sl"] = current_price - trail_dist_r * risk if direction == "BUY" \
+                           else current_price + trail_dist_r * risk
         return (TradeAction.TRAIL_TIGHT, detail)
 
-    # 1R → scale out
-    if pnl_r >= 1.0 and not scaled_out:
-        detail["reason"] = "1R_scale_out"
+    # Configured R → scale out
+    if pnl_r >= scale_r_threshold and not scaled_out:
+        detail["reason"] = f"{scale_r_threshold:.2f}R_scale_out"
         return (TradeAction.SCALE_OUT_HALF, detail)
 
-    # 0.5R → move to breakeven
-    if pnl_r >= 0.5:
-        detail["reason"] = "0.5R_breakeven"
+    # Configured R → move to breakeven
+    if pnl_r >= be_r_threshold:
+        detail["reason"] = f"{be_r_threshold:.2f}R_breakeven"
         detail["new_sl"] = entry
         return (TradeAction.MOVE_BE, detail)
 

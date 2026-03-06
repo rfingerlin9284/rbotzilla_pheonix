@@ -107,7 +107,8 @@ class AggressivePortfolioMonitor:
         
         # Calculate current P&L
         pnl_usd = (current_price - position.entry_price) * position.size_units
-        pnl_percent = ((current_price - position.entry_price) / position.entry_price) * 100
+        direction_multiplier = 1.0 if position.size_units > 0 else -1.0
+        pnl_percent = (((current_price - position.entry_price) * direction_multiplier) / position.entry_price) * 100
         
         # Update metrics
         self.registry.update_position_metrics(
@@ -200,7 +201,17 @@ class AggressivePortfolioMonitor:
         print(f"   P&L: ${pnl_usd:.2f} ({pnl_percent:.2f}%)")
         print(f"   CLOSING POSITION IMMEDIATELY")
         
-        # Move SL to current price (force immediate exit)
+        # Force immediate closure on broker side
+        from util.oco_order_manager import get_oco_manager
+        oco_mgr = get_oco_manager()
+        if oco_mgr and oco_mgr.oanda_connector:
+            try:
+                oco_mgr.oanda_connector.close_trade(position.position_id)
+                print(f"✅ Broker executing immediate close for RED ALERT")
+            except Exception as e:
+                print(f"⚠️  Broker close failed for RED ALERT: {e}")
+        
+        # Move SL to current price (force immediate exit) locally
         self.registry.move_stop_loss(
             position.position_id,
             current_price,
@@ -220,31 +231,47 @@ class AggressivePortfolioMonitor:
     def _consider_aggressive_sl_adjustment(self, position, current_price: float, pnl_percent: float):
         """Adjust SL aggressively to protect profits"""
         
+        is_long = position.size_units > 0
+        
         # If position is profitable, move SL to breakeven or above
         if pnl_percent > 0.5:  # 0.5% profit
-            new_sl = max(position.current_sl, position.entry_price - 0.1)
+            if is_long:
+                new_sl = max(position.current_sl, position.entry_price + 0.0001)
+                sl_improved = new_sl > position.current_sl
+            else:
+                new_sl = min(position.current_sl, position.entry_price - 0.0001)
+                sl_improved = new_sl < position.current_sl
             
-            if new_sl > position.current_sl:
+            if sl_improved:
                 self.registry.move_stop_loss(
                     position.position_id,
                     new_sl,
                     SLMode.BREAKEVEN,
-                    f"Profit protection: Moving SL higher"
+                    f"Profit protection: Moving SL {'higher' if is_long else 'lower'}"
                 )
+                from util.oco_order_manager import get_oco_manager
+                get_oco_manager().update_stop_loss_order(position.position_id, new_sl)
                 self.stats['sl_adjustments'] += 1
         
         # If position has bigger profit, trail more aggressively
         if pnl_percent > 1.0:  # 1% profit
             atr = self._estimate_atr(position.symbol)
-            aggressive_trail = current_price - (1.0 * atr)  # Trail 1x ATR
+            if is_long:
+                aggressive_trail = current_price - (1.0 * atr)  # Trail 1x ATR below current price
+                sl_improved = aggressive_trail > position.current_sl
+            else:
+                aggressive_trail = current_price + (1.0 * atr)  # Trail 1x ATR above current price
+                sl_improved = aggressive_trail < position.current_sl
             
-            if aggressive_trail > position.current_sl:
+            if sl_improved:
                 self.registry.move_stop_loss(
                     position.position_id,
                     aggressive_trail,
                     SLMode.MOMENTUM_TRAIL,
                     f"Aggressive trail: 1x ATR ({atr:.5f})"
                 )
+                from util.oco_order_manager import get_oco_manager
+                get_oco_manager().update_stop_loss_order(position.position_id, aggressive_trail)
                 self.stats['sl_adjustments'] += 1
     
     def _print_position_status(self, position):

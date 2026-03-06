@@ -285,6 +285,39 @@ class OCOOrderManager:
         
         return success
     
+    def update_stop_loss_order(self, position_id: str, new_sl_price: float) -> bool:
+        """Update the Stop Loss leg of the OCO order via OANDA's trade modification endpoint"""
+        if position_id not in self.orders:
+            return False
+            
+        oco = self.orders[position_id]
+        
+        if self.oanda_connector:
+            try:
+                # Use trade_id (which is position_id in our engine integration) to set stop loss
+                result = self.oanda_connector.set_trade_stop(trade_id=position_id, stop_price=new_sl_price)
+                if result.get('success'):
+                    oco.sl_price = new_sl_price
+                    self._persist_order(oco)
+                    print(f"✅ OANDA OCO Updated: {position_id} Stop Loss moved to {new_sl_price}")
+                    return True
+                else:
+                    print(f"⚠️  OANDA SL Update Failed for {position_id}: {result.get('error')}")
+                    # Still update local state if broker sync fails, better than desync
+                    oco.sl_price = new_sl_price
+                    self._persist_order(oco)
+                    return False
+            except Exception as e:
+                print(f"⚠️  OANDA SL API Error for {position_id}: {e}")
+                oco.sl_price = new_sl_price
+                self._persist_order(oco)
+                return False
+                
+        # If no hardware connector attached, update just locally
+        oco.sl_price = new_sl_price
+        self._persist_order(oco)
+        return True
+    
     def get_oco_order(self, position_id: str) -> Optional[OCOOrder]:
         """Get OCO order for a position"""
         return self.orders.get(position_id)
