@@ -3,7 +3,9 @@
   "options": {
     "shell": {
       "executable": "/bin/bash",
-      "args": ["-c"]
+      "args": [
+        "-c"
+      ]
     }
   },
   "tasks": [
@@ -11,29 +13,48 @@
       "label": "🩺 Run Diagnostics (Manual)",
       "type": "shell",
       "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash scripts/rbot_ctl.sh diagnostics",
-      "presentation": { "reveal": "always", "panel": "new", "title": "RBOTZILLA Diagnostics" },
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "title": "RBOTZILLA Diagnostics"
+      },
       "problemMatcher": []
     },
     {
       "label": "🚀 Start Autonomous Engine (Headless)",
       "type": "shell",
       "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash scripts/rbot_ctl.sh start-auto",
-      "group": { "kind": "build", "isDefault": true },
-      "presentation": { "reveal": "always", "panel": "new", "title": "RBOTZILLA Start" },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "title": "RBOTZILLA Start"
+      },
       "problemMatcher": []
     },
     {
       "label": "🔄 Restart & Refresh (Safe)",
       "type": "shell",
       "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash scripts/rbot_ctl.sh refresh",
-      "presentation": { "reveal": "always", "panel": "new", "title": "RBOTZILLA Refresh" },
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "title": "RBOTZILLA Refresh"
+      },
       "problemMatcher": []
     },
     {
       "label": "📟 Headless Monitor (Narration + Connection)",
       "type": "shell",
       "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash scripts/rbot_ctl.sh monitor",
-      "presentation": { "reveal": "always", "panel": "new", "title": "RBOTZILLA Monitor" },
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "title": "RBOTZILLA Monitor"
+      },
       "isBackground": true,
       "problemMatcher": []
     },
@@ -41,7 +62,35 @@
       "label": "⏹ Shutdown",
       "type": "shell",
       "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash scripts/rbot_ctl.sh shutdown",
-      "presentation": { "reveal": "always", "panel": "shared", "title": "RBOTZILLA Stop" },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "title": "RBOTZILLA Stop"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "📝 Live Engine Logs (Real-Time Stream)",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash scripts/rbot_ctl.sh logs",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "title": "Engine Logs"
+      },
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "🗣️ Live Narration JSON (Real-Time Stream)",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && tail -f narration.jsonl",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "title": "Narration Stream"
+      },
+      "isBackground": true,
       "problemMatcher": []
     }
   ]
