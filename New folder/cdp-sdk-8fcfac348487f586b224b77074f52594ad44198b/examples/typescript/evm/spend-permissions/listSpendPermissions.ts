@@ -1,0 +1,25 @@
+// Usage: pnpm tsx evm/spend-permissions/listSpendPermissions.ts
+
+import { CdpClient } from "@coinbase/cdp-sdk";
+import "dotenv/config";
+
+import { safePrettyPrint } from "../../safePrettyPrint.js";
+
+const cdp = new CdpClient();
+
+const smartAccount = await cdp.evm.getOrCreateSmartAccount({
+  enableSpendPermissions: true,
+  name: "Example-Account",
+  owner: await cdp.evm.getOrCreateAccount({
+    name: "Example-Account-Owner",
+  }),
+});
+
+console.log("Smart Account Address:", smartAccount.address);
+
+const permissions = await cdp.evm.listSpendPermissions({
+  address: smartAccount.address,
+});
+
+console.log("All permissions granted by smart account:", smartAccount.address);
+safePrettyPrint(permissions);

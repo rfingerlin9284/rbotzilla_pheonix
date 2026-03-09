@@ -19,86 +19,140 @@ class MarketRegime(Enum):
     UNKNOWN = "unknown"
 
 
+import os
+import pickle
+import numpy as np
+import pandas as pd
+from pathlib import Path
+
 class RegimeDetector:
     """
-    Simple regime detector using price momentum and volatility
+    RandomForest-powered market regime detector
     """
     
     def __init__(self):
         self.current_regime = MarketRegime.UNKNOWN
         self.regime_confidence = 0.0
-        self.price_history: List[float] = []
+        self.price_history: List[Dict] = []
+        
+        self.model = None
+        self._load_model()
+        
+    def _load_model(self):
+        models_dir = Path(__file__).parent / 'models'
+        pkl_path = models_dir / 'random_forest.pkl'
+        if pkl_path.exists():
+            try:
+                with open(pkl_path, 'rb') as f:
+                    self.model = pickle.load(f)
+                print(f"✅ RegimeDetector: Successfully loaded {pkl_path.name}")
+            except Exception as e:
+                print(f"⚠️  RegimeDetector model load failed: {e}")
+                self.model = None
+        else:
+            print("⚠️  RegimeDetector: No .pkl model found at", pkl_path)
+            
+    def _compute_features(self, df: pd.DataFrame) -> Optional[np.ndarray]:
+        if len(df) < 50:
+            return None
+            
+        df['return_1p'] = df['close'].pct_change(1)
+        df['return_5p'] = df['close'].pct_change(5)
+        
+        df['sma_10'] = df['close'].rolling(10).mean()
+        df['sma_20'] = df['close'].rolling(20).mean()
+        df['sma_50'] = df['close'].rolling(50).mean()
+        
+        df['tr'] = np.maximum(
+            df['high'] - df['low'],
+            np.maximum(
+                abs(df['high'] - df['close'].shift(1)),
+                abs(df['low'] - df['close'].shift(1))
+            )
+        )
+        df['atr_14'] = df['tr'].rolling(14).mean()
+        
+        df['mom_10'] = (df['close'] - df['sma_10']) / df['sma_10']
+        df['mom_50'] = (df['close'] - df['sma_50']) / df['sma_50']
+        
+        feature_cols = ['return_1p', 'return_5p', 'atr_14', 'mom_10', 'mom_50']
+        # Use the latest row for prediction
+        latest_features = df[feature_cols].iloc[-1].values
+        
+        if np.isnan(latest_features).any():
+            return None
+            
+        return latest_features.reshape(1, -1)
         
     def update(self, price_data: Dict) -> MarketRegime:
-        """
-        Update regime based on new price data
-        
-        Args:
-            price_data: Dictionary with 'close', 'high', 'low', 'volume' etc.
-        
-        Returns:
-            Current market regime
-        """
+        """Update regime based on new price data (Fallback if no model)"""
         if not price_data:
             return MarketRegime.UNKNOWN
             
-        # Add to price history
-        if 'close' in price_data:
-            self.price_history.append(float(price_data['close']))
+        self.price_history.append(price_data)
+        if len(self.price_history) > 60:
+            self.price_history = self.price_history[-60:]
             
-            # Keep only last 50 candles
-            if len(self.price_history) > 50:
-                self.price_history = self.price_history[-50:]
-        
-        # Simple regime detection based on price momentum
-        if len(self.price_history) >= 10:
-            recent_avg = sum(self.price_history[-10:]) / 10
-            older_avg = sum(self.price_history[-20:-10]) / 10 if len(self.price_history) >= 20 else recent_avg
+        if not self.model:
+            # Fallback simple logic
+            self.current_regime = MarketRegime.SIDEWAYS
+            self.regime_confidence = 0.5
+            return self.current_regime
             
-            momentum = (recent_avg - older_avg) / older_avg if older_avg != 0 else 0
-            
-            # Classify regime
-            if momentum > 0.02:  # 2% upward momentum
-                self.current_regime = MarketRegime.BULL_STRONG
-                self.regime_confidence = min(abs(momentum) * 10, 1.0)
-            elif momentum > 0.005:  # 0.5% upward momentum
-                self.current_regime = MarketRegime.BULL_MOD
-                self.regime_confidence = min(abs(momentum) * 10, 1.0)
-            elif momentum < -0.02:  # 2% downward momentum
-                self.current_regime = MarketRegime.BEAR_STRONG
-                self.regime_confidence = min(abs(momentum) * 10, 1.0)
-            elif momentum < -0.005:  # 0.5% downward momentum
-                self.current_regime = MarketRegime.BEAR_MOD
-                self.regime_confidence = min(abs(momentum) * 10, 1.0)
-            else:
-                self.current_regime = MarketRegime.SIDEWAYS
-                self.regime_confidence = 0.8
-        
-        return self.current_regime
+        return self.detect_regime(self.price_history)
     
     def get_regime(self) -> MarketRegime:
-        """Get current market regime"""
         return self.current_regime
     
     def get_confidence(self) -> float:
-        """Get confidence in current regime (0.0 to 1.0)"""
         return self.regime_confidence
     
     def detect_regime(self, candles: List[Dict]) -> MarketRegime:
-        """
-        Detect regime from a list of candles
-        
-        Args:
-            candles: List of candle dictionaries
-        
-        Returns:
-            Detected market regime
-        """
-        if not candles:
+        """ML Prediction from candles"""
+        if not candles or not self.model:
             return MarketRegime.UNKNOWN
-        
-        # Process all candles
-        for candle in candles:
-            self.update(candle)
-        
+            
+        try:
+            # Reformat to flat dicts
+            parsed = []
+            for c in candles:
+                if 'mid' in c:
+                    parsed.append({
+                        'open': float(c['mid']['o']),
+                        'high': float(c['mid']['h']),
+                        'low': float(c['mid']['l']),
+                        'close': float(c['mid']['c']),
+                    })
+                elif 'close' in c:
+                    parsed.append({
+                        'open': float(c.get('open', c['close'])),
+                        'high': float(c.get('high', c['close'])),
+                        'low': float(c.get('low', c['close'])),
+                        'close': float(c['close']),
+                    })
+                    
+            df = pd.DataFrame(parsed)
+            features = self._compute_features(df)
+            
+            if features is not None:
+                prediction = self.model.predict(features)[0]
+                probabilities = self.model.predict_proba(features)[0]
+                confidence = max(probabilities)
+                
+                # 0 = Sideways, 1 = Bull, 2 = Bear
+                if prediction == 0:
+                    self.current_regime = MarketRegime.SIDEWAYS
+                elif prediction == 1:
+                    self.current_regime = MarketRegime.BULL_MOD
+                elif prediction == 2:
+                    self.current_regime = MarketRegime.BEAR_MOD
+                    
+                self.regime_confidence = float(confidence)
+                return self.current_regime
+                
+        except Exception as e:
+            print(f"⚠️  ML Regime prediction error: {e}")
+            
+        self.current_regime = MarketRegime.UNKNOWN
+        self.regime_confidence = 0.0
         return self.current_regime

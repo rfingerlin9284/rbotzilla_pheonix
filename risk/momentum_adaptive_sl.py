@@ -151,17 +151,20 @@ class AdaptiveStopLoss:
                 }
         
         # ════════════════════════════════════════════════════════════════
-        # MOMENTUM BREAKEVEN: Move to breakeven after initial profit
+        # MOMENTUM BREAKEVEN: Move to breakeven after meaningful profit
+        # FIX #2: Threshold raised 0.5 → 8 pips so rbz_tight_trailing.py
+        # remains the SOLE authority for early SL movement.  This system
+        # only activates later when the trade has genuinely committed.
         # ════════════════════════════════════════════════════════════════
-        if 0.5 < pnl_pips <= 1.0 and self.sl_mode == "ORIGINAL":
-            # Lock in some profit quickly
-            new_sl = self.entry_price if self.direction == "BUY" else self.entry_price
+        if 8.0 < pnl_pips <= 15.0 and self.sl_mode == "ORIGINAL":
+            # Lock in meaningful profit (above M15 noise level)
+            new_sl = self.entry_price
             self.current_sl = new_sl
             self.sl_mode = "BREAKEVEN"
             
             self.sl_movements.append({
                 'timestamp': datetime.now(timezone.utc).isoformat(),
-                'trigger': 'EARLY_PROFIT_LOCK',
+                'trigger': 'MOMENTUM_BREAKEVEN_LOCK',
                 'old_sl': new_sl,
                 'new_sl': new_sl,
                 'pnl_at_move': pnl_pips
@@ -170,7 +173,7 @@ class AdaptiveStopLoss:
             return {
                 'action': 'MOVE_SL',
                 'new_sl': new_sl,
-                'reason': f'Early profit lock: {pnl_pips:.1f}pips → moved to BE',
+                'reason': f'Momentum breakeven: {pnl_pips:.1f}pips → moved to BE (above M15 noise)',
                 'pnl_pips': pnl_pips
             }
         
@@ -386,7 +389,7 @@ def calculate_momentum_profile(symbol: str, recent_candles: List[Dict]) -> Momen
     vol_changes = [volumes[i] - volumes[i-1] for i in range(1, len(volumes))]
     vol_accel = vol_changes[-1] - vol_changes[-2] if len(vol_changes) >= 2 else 0
     
-    # Simple RSI (14 period approximation with fewer candles)
+    # RSI (14 period approximation with fewer candles)
     deltas = [changes[i] for i in range(len(changes))]
     gains = [d for d in deltas if d > 0]
     losses = [-d for d in deltas if d < 0]
@@ -394,29 +397,48 @@ def calculate_momentum_profile(symbol: str, recent_candles: List[Dict]) -> Momen
     avg_loss = sum(losses) / len(losses) if losses else 0
     rs = avg_gain / avg_loss if avg_loss != 0 else 100
     rsi = 100 - (100 / (1 + rs)) if rs >= 0 else 0
-    
-    # MACD (simplified)
-    ema_12 = sum(closes[-12:]) / min(12, len(closes))
-    ema_26 = sum(closes) / len(closes)
+
+    # FIX #5: MACD using proper EMA weighting (was incorrectly using SMA)
+    def _ema_calc(prices: list, period: int) -> float:
+        """Proper exponential moving average."""
+        if not prices:
+            return 0.0
+        k = 2.0 / (period + 1)
+        val = prices[0]
+        for p in prices[1:]:
+            val = p * k + val * (1 - k)
+        return val
+
+    ema_12 = _ema_calc(closes, 12)
+    ema_26 = _ema_calc(closes, 26)
     macd = ema_12 - ema_26
-    macd_histogram = macd  # Simplified
-    
-    # Momentum change (difference in price change rate)
-    momentum_change = price_accel / (closes[-1] - closes[-2]) if (closes[-1] - closes[-2]) != 0 else 0
-    
+    macd_histogram = macd
+
+    # FIX #5: Stabilize momentum_change to prevent division-by-near-zero spikes
+    last_bar_move = closes[-1] - closes[-2]
+    # Guard: if last bar barely moved, don't divide into it
+    if abs(last_bar_move) > 1e-6:
+        momentum_change = price_accel / abs(last_bar_move)
+    else:
+        momentum_change = 0.0
+    # Hard cap to prevent instability-driven false STRONG_ACCELERATION signals
+    momentum_change = max(-5.0, min(5.0, momentum_change))
+
     # Classify momentum type
     if abs(price_accel) > 0.0002 and vol_accel > 0:
         momentum_type = "STRONG_ACCELERATION"
-        momentum_strength = min(1.0, abs(momentum_change) * 2)
+        # FIX #5: was min(1.0, ...) which allowed misleading 1.0 values
+        # Now capped at 0.95 and uses a more stable formula
+        momentum_strength = min(0.95, 0.65 + abs(momentum_change) * 0.06)
     elif abs(price_accel) > 0.0001:
         momentum_type = "MODERATE"
         momentum_strength = 0.65
     elif abs(momentum_change) > 0.5:
         momentum_type = "REVERSAL"
-        momentum_strength = 0.4
+        momentum_strength = 0.40
     else:
         momentum_type = "WEAK"
-        momentum_strength = 0.3
+        momentum_strength = 0.30
     
     # Expected move based on ATR
     atr = sum([highs[i] - lows[i] for i in range(len(highs))]) / len(highs)

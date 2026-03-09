@@ -24,12 +24,10 @@ class OCOOrder:
     sl_order_id: str  # Stop loss order ID
     tp_order_id: str  # Take profit order ID
     
-    # SL details
+    # SL/TP details
     sl_price: float
-    sl_type: str = "STOP"  # STOP loss
-    
-    # TP details
     tp_price: float
+    sl_type: str = "STOP"  # STOP loss
     tp_type: str = "LIMIT"  # TP is a limit order
     
     # Status

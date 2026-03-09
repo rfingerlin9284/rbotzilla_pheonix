@@ -171,7 +171,7 @@ class UniversalPositionRegistry:
                 entry_time=time.time(),
                 entry_price=entry_price,
                 size_units=size_units,
-                notional_amount=notional_amount := entry_price * size_units,
+                notional_amount=entry_price * size_units,
                 initial_sl=initial_sl,
                 current_sl=initial_sl,
                 take_profit=take_profit,

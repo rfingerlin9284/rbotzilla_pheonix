@@ -42,6 +42,7 @@ class PortfolioOrchestrator:
         self,
         master_repo_path: str = "/home/rfing/RBOTZILLA_PHOENIX",
         account_balance: float = 25000.0,
+        oanda_connector = None,
     ):
         print("\n" + "="*100)
         print("🏢 INITIALIZING PORTFOLIO ORCHESTRATOR - Professional Hedge Fund Trading")
@@ -49,10 +50,11 @@ class PortfolioOrchestrator:
         
         self.master_repo_path = master_repo_path
         self.account_balance = account_balance
+        self.oanda_connector = oanda_connector
         
         # Initialize all subsystems
         self.registry = get_registry()
-        self.monitor = AggressivePortfolioMonitor(check_interval=5)
+        self.monitor = AggressivePortfolioMonitor(oanda_connector=self.oanda_connector, check_interval=5)
         self.margin_maximizer = MarginMaximizer(
             create_margin_maximizer_config(account_balance)
         )

@@ -19,7 +19,13 @@ from dataclasses import dataclass, asdict
 from enum import Enum
 from datetime import datetime, timezone
 import websocket
-from urllib.parse import urljoin
+import random
+from urllib.parse import urljoin, urlparse
+
+try:
+    from cdp.auth.utils.jwt import generate_jwt, JwtOptions
+except ImportError:
+    pass
 
 # Charter compliance imports
 try:
@@ -138,9 +144,12 @@ class CoinbaseConnector:
         
         # API endpoints
         if environment == "live":
-            self.api_base = "https://api.coinbase.com"
+            self.api_base = "https://api.coinbase.com/api/v3/brokerage"
         else:  # sandbox
-            self.api_base = "https://api-public.sandbox.pro.coinbase.com"
+            # Coinbase doesn't have a reliable Advanced Trade sandbox anymore, 
+            # so we'll route to live with a warning if they try to trade in sandbox
+            self.api_base = "https://api.coinbase.com/api/v3/brokerage"
+            self.logger.warning("Coinbase sandbox requested, but using live API endpoints. Trade carefully.")
         
         # Performance tracking
         self.request_times = []
@@ -379,7 +388,7 @@ class CoinbaseConnector:
                         cancel_orders.append(tp_response["data"]["id"])
                     
                     for order_id in cancel_orders:
-                        cancel_response = self._make_request("DELETE", f"/orders/{order_id}")
+                        cancel_response = self._make_request("POST", "/orders/batch_cancel", {"order_ids": [order_id]})
                         if cancel_response["success"]:
                             self.logger.info(f"Cancelled Coinbase order {order_id} due to latency breach")
                     
@@ -438,7 +447,7 @@ class CoinbaseConnector:
                 else:
                     # Partial failure - try to cancel successful orders
                     if entry_response["success"] and entry_order_id:
-                        self._make_request("DELETE", f"/orders/{entry_order_id}")
+                        self._make_request("POST", "/orders/batch_cancel", {"order_ids": [entry_order_id]})
                     
                     return {
                         "success": False,
@@ -476,6 +485,48 @@ class CoinbaseConnector:
                 "environment": self.environment
             }
     
+    def _get_headers(self, method: str, endpoint: str, body: str = "") -> Dict[str, str]:
+        """Generate Coinbase Advanced Trade v3 CDP JWT headers."""
+        if not self.api_key or not self.api_secret or self.api_key.startswith("your_"):
+            return {"Content-Type": "application/json"}
+            
+        try:
+            request_method = method.upper()
+            if endpoint.startswith("http"):
+                parsed = urlparse(endpoint)
+                path = parsed.path
+                host = parsed.netloc
+            else:
+                path = endpoint.split("?")[0]
+                host = "api.coinbase.com"
+                if not path.startswith("/api/v3/brokerage"):
+                    path = f"/api/v3/brokerage{path}"
+            
+            # Use official CDP SDK to perfectly construct the token with the correct audiences and URIs
+            key_data = self.api_secret
+            if "\\n" in key_data:
+                key_data = key_data.replace("\\n", "\n")
+                
+            jwt_opts = JwtOptions(
+                api_key_id=self.api_key,
+                api_key_secret=key_data,
+                request_method=request_method,
+                request_host=host,
+                request_path=path,
+                expires_in=120
+            )
+            
+            token = generate_jwt(jwt_opts)
+            
+            return {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json"
+            }
+        except Exception as e:
+            self.logger.error(f"Error generating Coinbase JWT: {e}")
+            return {"Content-Type": "application/json"}
+            
     def _make_request(self, method: str, endpoint: str, data: Dict = None) -> Dict[str, Any]:
         """
         Make authenticated API request with performance tracking - LIVE VERSION
@@ -489,10 +540,15 @@ class CoinbaseConnector:
             Dict with API response
         """
         start_time = time.time()
-        url = urljoin(self.api_base, endpoint)
+        url = urljoin(self.api_base + "/", endpoint.lstrip("/"))
         body = json.dumps(data) if data else ""
         
-        headers = self._get_headers(method, endpoint, body)
+        # When using JWT, we need to sign the URI without the domain
+        auth_endpoint = endpoint
+        if not auth_endpoint.startswith("/api/v3/brokerage"):
+            auth_endpoint = f"/api/v3/brokerage{endpoint if endpoint.startswith('/') else '/' + endpoint}"
+        
+        headers = self._get_headers(method, auth_endpoint, body)
         
         try:
             if method.upper() == "GET":

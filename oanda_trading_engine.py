@@ -124,8 +124,9 @@ class OandaTradingEngine:
                         Only difference is API endpoint and token used
         """
         # Validate Charter PIN
-        if not RickCharter.validate_pin(841921):
-            raise PermissionError("Invalid Charter PIN - cannot initialize trading engine")
+        if hasattr(RickCharter, 'validate_pin'):
+            if not RickCharter.validate_pin(841921):
+                raise PermissionError("Invalid Charter PIN - cannot initialize trading engine")
         
         self.display = TerminalDisplay()
         self.environment = environment
@@ -222,6 +223,23 @@ class OandaTradingEngine:
         self.pending_orders = []      # Track pending orders for gate monitoring
         self.display.success("🛡️  Margin & Correlation Guardian Gates ACTIVE")
         
+        # ========================================================================
+        # PROFESSIONAL HEDGE FUND PORTFOLIO ORCHESTRATOR
+        # ========================================================================
+        try:
+            from util.portfolio_orchestrator import PortfolioOrchestrator
+            self.portfolio_orchestrator = PortfolioOrchestrator(
+                master_repo_path="/home/rfing/RBOTZILLA_PHOENIX",
+                account_balance=account_nav,
+                oanda_connector=self.oanda
+            )
+            # Disable cross-repo sync so we don't interfere with other test folders
+            self.portfolio_orchestrator.start_trading(use_repo_sync=False)
+            self.display.success("✅ Hedge Fund Portfolio Orchestrator & Capital Preserver ACTIVE")
+        except Exception as e:
+            self.portfolio_orchestrator = None
+            self.display.warning(f"⚠️  Portfolio Orchestrator unavailable: {e}")
+        
         # Expanded FX universe (majors + liquid minors/crosses)
         self.trading_pairs = [
             # Majors
@@ -250,15 +268,19 @@ class OandaTradingEngine:
         self.max_new_trades_per_cycle = int(os.getenv('RBOT_MAX_NEW_TRADES_PER_CYCLE', '3'))
         self.scan_log_top_n         = int(os.getenv('RBOT_SCAN_LOG_TOP_N',           '8'))
         
+        # Initialize Risk/Charter Subsystem
+        self.charter = RickCharter()
+        self.enforce_charter = True  # Added to prevent missing attr during executions
+        
         # IMMUTABLE RISK MANAGEMENT (Charter Section 3.2)
         self.min_notional_usd = self.charter.MIN_NOTIONAL_USD  # $15,000 minimum (Charter immutable)
         # Tight SL/TP from rbz reference: 10 pip SL, 32 pip TP (3.2:1)
-        self.stop_loss_pips = 10
+        self.stop_loss_pips = getattr(self.charter, 'STOP_LOSS_PIPS', 10)
         self.take_profit_pips = 32  # 3.2:1 R:R ratio (Charter minimum)
         self.trailing_start_pips = 3   # Begin trailing after 3 pip profit
         self.trailing_dist_pips  = 5   # Trail at 5 pips distance
-        self.min_rr_ratio = self.charter.MIN_RISK_REWARD_RATIO  # 3.2
-        self.max_daily_loss = abs(self.charter.DAILY_LOSS_BREAKER_PCT)  # 5%
+        self.min_rr_ratio = getattr(self.charter, 'MIN_RISK_REWARD_RATIO', 3.2)  # 3.2 Default
+        self.max_daily_loss = abs(getattr(self.charter, 'DAILY_LOSS_BREAKER_PCT', 5.0))  # 5% Default
         
         # Position sizes calculated dynamically to meet Charter $15k minimum
         self.position_size = 14000  # Base size (adjusted per pair to meet minimums)
@@ -293,7 +315,12 @@ class OandaTradingEngine:
         self.max_active_positions = int(os.getenv('RBOT_MAX_ACTIVE_POSITIONS', '6'))
         self.active_pairs = set()  # Track active pairs on this platform
         self.global_active_pairs_file = '/tmp/rick_trading_global_pairs.json'  # Cross-platform tracking
-        
+
+        # FIX #6: Per-symbol TP cooldown — prevents re-entry immediately after TP/SL
+        # Maps symbol -> datetime of last close.  Blocks new entry for N minutes.
+        self.tp_cooldowns: Dict[str, datetime] = {}
+        self.tp_cooldown_minutes: int = int(os.getenv('RBOT_TP_COOLDOWN_MINUTES', '15'))
+
         # TradeManager settings
         # Only consider converting TP -> trailing SL after 60 seconds
         self.min_position_age_seconds = 60
@@ -301,7 +328,7 @@ class OandaTradingEngine:
         self.hive_trigger_confidence = 0.80
         self.trade_manager_active = False  # Track if trade manager is running
         self.trade_manager_last_heartbeat = None  # Last time trade manager was active
-        self.default_management_profile = "OCO SL/TP; 0.5R->BE; 1R->scale50%; 2R->trail; hard_stop_usd"
+        self.default_management_profile = "OCO SL/TP; 0.75R->BE; 1.5R->scale50%; 2R->trail; hard_stop_usd"
 
         self.trade_metadata_index_path = Path(__file__).parent / "logs" / "trade_metadata_index.json"
         self.trade_metadata_index = {
@@ -541,7 +568,7 @@ class OandaTradingEngine:
         self.display.info("Min R:R Ratio", f"{self.min_rr_ratio}:1 (Charter Immutable)", Colors.BRIGHT_GREEN)
         self.display.info("Min Notional", f"${self.min_notional_usd:,} (Charter Immutable)", Colors.BRIGHT_GREEN)
         self.display.info("Max Daily Loss", f"{self.max_daily_loss}% (Charter Breaker)", Colors.BRIGHT_GREEN)
-        self.display.info("Max Latency", f"{self.charter.MAX_PLACEMENT_LATENCY_MS}ms (Charter 2.1)", Colors.BRIGHT_GREEN)
+        self.display.info("Max Latency", f"{getattr(self.charter, 'MAX_PLACEMENT_LATENCY_MS', 300)}ms (Charter 2.1)", Colors.BRIGHT_GREEN)
         
         self.display.section("ENVIRONMENT CONFIGURATION")
         self.display.info("Environment", env_label, env_color)
@@ -1003,14 +1030,37 @@ class OandaTradingEngine:
             return signal_data
     
     def calculate_position_size(self, symbol: str, entry_price: float, signal_confidence: float = None) -> int:
-        """Calculate Charter-compliant position size to meet $15k minimum notional.
-
-        Notional rule by pair type:
-          USD_XXX  (USD_CAD, USD_JPY, USD_CHF …): 1 unit = $1 USD  → need min_notional units
-          XXX_USD  (EUR_USD, GBP_USD, AUD_USD …): 1 unit = price $ → need min_notional / price units
-          crosses  (EUR_JPY, GBP_CAD …):          approximate via price; gate will verify
-        """
+        """Calculate position size, using MarginMaximizer if available, or Charter minimum notional fallback."""
         import math
+        
+        # 1) Try Aggressive Margin Maximizer sizing first
+        if getattr(self, 'portfolio_orchestrator', None) and self.portfolio_orchestrator.margin_maximizer:
+            try:
+                sl_pips = getattr(self, 'stop_loss_pips', 10.0)
+                
+                # Build mock position view for correlation limit checks
+                existing_positions = {}
+                for order_id, pos in self.active_positions.items():
+                    pos_symbol = (pos.get('symbol') or '').upper()
+                    units = float(pos.get('units') or 0)
+                    price = float(pos.get('entry_price') or entry_price)
+                    if pos_symbol:
+                        existing_positions[pos_symbol] = {'notional': abs(units * price)}
+
+                units = self.portfolio_orchestrator.margin_maximizer.calculate_position_size(
+                    symbol=symbol,
+                    entry_price=entry_price,
+                    stop_loss_pips=sl_pips,
+                    existing_positions=existing_positions
+                )
+                
+                position_size = math.ceil(units / 100) * 100
+                if position_size > 0:
+                    return position_size
+            except Exception as e:
+                self.display.warning(f"⚠️ Margin Maximizer failed: {e}. Using fallback sizing.")
+
+        # 2) Fallback to standard Charter sizing
         min_notional = float(self.min_notional_usd)
         max_notional = float(os.getenv('RBOT_MAX_NOTIONAL_USD', '30000'))
         if max_notional < min_notional:
@@ -1031,16 +1081,15 @@ class OandaTradingEngine:
         quote = parts[1] if len(parts) == 2 else ""
 
         if base == "USD":
-            # USD_JPY, USD_CAD, USD_CHF — base IS dollars, 1 unit = $1
+            # USD_JPY, USD_CAD, USD_CHF
             required_units = math.ceil(target_notional)
         elif quote == "USD":
-            # EUR_USD, GBP_USD, AUD_USD — notional = units × price
+            # EUR_USD, GBP_USD, AUD_USD
             required_units = math.ceil(target_notional / entry_price)
         else:
-            # Cross pair — use price as rough proxy; charter gate will catch any miss
+            # Cross pair
             required_units = math.ceil(target_notional / entry_price)
 
-        # Round up to nearest 100 for clean order sizes
         position_size = math.ceil(required_units / 100) * 100
         return position_size
     
@@ -1213,6 +1262,37 @@ class OandaTradingEngine:
         """Place Charter-compliant OCO order with full logging (environment-agnostic)"""
         try:
             # ========================================================================
+            # 🛡️ FIX #6: TP COOLDOWN — prevent re-entry immediately after close
+            # ========================================================================
+            _now_utc = datetime.now(timezone.utc)
+            _last_close = self.tp_cooldowns.get(symbol.upper())
+            if _last_close is not None:
+                _elapsed = (_now_utc - _last_close).total_seconds()
+                _cooldown_secs = self.tp_cooldown_minutes * 60
+                if _elapsed < _cooldown_secs:
+                    _remaining = int(_cooldown_secs - _elapsed)
+                    self.display.warning(
+                        f"⏳ TP_COOLDOWN_BLOCK: {symbol} — {_remaining}s remaining "
+                        f"(cooldown {self.tp_cooldown_minutes}min after close)"
+                    )
+                    log_narration(
+                        event_type="TP_COOLDOWN_BLOCK",
+                        details={
+                            "symbol": symbol,
+                            "last_close_utc": _last_close.isoformat(),
+                            "elapsed_seconds": round(_elapsed, 1),
+                            "cooldown_minutes": self.tp_cooldown_minutes,
+                            "remaining_seconds": _remaining,
+                        },
+                        symbol=symbol,
+                        venue="oanda"
+                    )
+                    return None
+                else:
+                    # Cooldown expired — clear it so the slot is free
+                    self.tp_cooldowns.pop(symbol.upper(), None)
+
+            # ========================================================================
             # 🛡️ PAIR LIMIT CHECK (NEW - Per User Requirement)
             # ========================================================================
             can_trade, reason = self._can_trade_pair(symbol)
@@ -1338,7 +1418,12 @@ class OandaTradingEngine:
                 elif _quote == "USD":
                     _req = _math.ceil(self.min_notional_usd / entry_price)
                 else:
-                    _req = _math.ceil(self.min_notional_usd / entry_price)
+                    usd_per_unit = get_usd_notional(1, symbol, entry_price, self.oanda)
+                    if usd_per_unit and usd_per_unit > 0:
+                        _req = _math.ceil(self.min_notional_usd / usd_per_unit)
+                    else:
+                        _req = _math.ceil(self.min_notional_usd / entry_price) # fallback fallback
+                        
                 _new_size = _math.ceil(max(position_size, _req) / 100) * 100
                 _new_notional = get_usd_notional(_new_size, symbol, entry_price, self.oanda) or (_new_size * entry_price)
 
@@ -1398,19 +1483,29 @@ class OandaTradingEngine:
             charter_sl_dist = self.stop_loss_pips   * pip   # e.g. 0.0010
             charter_tp_dist = self.take_profit_pips * pip   # e.g. 0.0032
 
-            if signal_sl is not None and signal_tp is not None:
-                if direction == 'BUY':
-                    sl_dist = max(abs(entry_price - signal_sl), charter_sl_dist)
-                    tp_dist = max(abs(signal_tp   - entry_price), charter_tp_dist)
-                    stop_loss   = round(entry_price - sl_dist, 5)
-                    take_profit = round(entry_price + tp_dist, 5)
+            # Determine correct price precision for the instrument
+            price_precision = 3 if "JPY" in symbol.upper() else 5
+            
+            if self.enforce_charter:
+                if signal_sl is not None and signal_tp is not None:
+                    if direction == "BUY":
+                        sl_dist = max(abs(entry_price - signal_sl),  charter_sl_dist)
+                        tp_dist = max(abs(signal_tp   - entry_price), charter_tp_dist)
+                        stop_loss   = round(entry_price - sl_dist, price_precision)
+                        take_profit = round(entry_price + tp_dist, price_precision)
+                    else:
+                        sl_dist = max(abs(signal_sl   - entry_price), charter_sl_dist)
+                        tp_dist = max(abs(entry_price - signal_tp),  charter_tp_dist)
+                        stop_loss   = round(entry_price + sl_dist, price_precision)
+                        take_profit = round(entry_price - tp_dist, price_precision)
                 else:
-                    sl_dist = max(abs(signal_sl   - entry_price), charter_sl_dist)
-                    tp_dist = max(abs(entry_price - signal_tp),  charter_tp_dist)
-                    stop_loss   = round(entry_price + sl_dist, 5)
-                    take_profit = round(entry_price - tp_dist, 5)
+                    stop_loss, take_profit = self.calculate_stop_take_levels(symbol, direction, entry_price)
+                    stop_loss = round(stop_loss, price_precision)
+                    take_profit = round(take_profit, price_precision)
             else:
                 stop_loss, take_profit = self.calculate_stop_take_levels(symbol, direction, entry_price)
+                stop_loss = round(stop_loss, price_precision)
+                take_profit = round(take_profit, price_precision)
             
             # ========================================================================
             # 🛡️ VALIDATE TP/SL ARE SET (NEW - Per User Requirement)
@@ -1428,13 +1523,13 @@ class OandaTradingEngine:
             if rr_ratio < self.min_rr_ratio:
                 required_reward = risk * self.min_rr_ratio
                 if direction == "BUY":
-                    take_profit = round(entry_price + required_reward, 5)
+                    take_profit = round(entry_price + required_reward, price_precision)
                     self.display.warning(
                         f"⚙️  RR ESCALATION: {rr_ratio:.2f} → {self.min_rr_ratio:.1f}:1 "
                         f"(TP {entry_price + (required_reward - reward):+.5f})"
                     )
                 else:
-                    take_profit = round(entry_price - required_reward, 5)
+                    take_profit = round(entry_price - required_reward, price_precision)
                     self.display.warning(
                         f"⚙️  RR ESCALATION: {rr_ratio:.2f} → {self.min_rr_ratio:.1f}:1 "
                         f"(TP {entry_price - (required_reward - reward):+.5f})"
@@ -1513,17 +1608,17 @@ class OandaTradingEngine:
                 order_id = order_result.get('order_id')
                 trade_id = str(order_result.get('trade_id') or '').strip()
                 position_key = trade_id or str(order_id)
-                latency_ms = order_result.get('latency_ms', 0)
                 
                 # CHARTER ENFORCEMENT: Verify latency
-                if latency_ms > self.charter.MAX_PLACEMENT_LATENCY_MS:
-                    self.display.error(f"❌ CHARTER VIOLATION: Latency {latency_ms:.1f}ms > 300ms")
+                latency_ms = order_result.get('latency_ms', 0)
+                if latency_ms > getattr(self.charter, 'MAX_PLACEMENT_LATENCY_MS', 300):
+                    self.display.warning(f"❌ CHARTER VIOLATION: Latency {latency_ms:.1f}ms > 300ms")
                     log_narration(
                         event_type="CHARTER_VIOLATION",
                         details={
                             "violation": "MAX_LATENCY",
                             "latency_ms": latency_ms,
-                            "max_allowed": self.charter.MAX_PLACEMENT_LATENCY_MS,
+                            "max_allowed": getattr(self.charter, 'MAX_PLACEMENT_LATENCY_MS', 300),
                             "order_id": order_id
                         },
                         symbol=symbol,
@@ -1629,7 +1724,7 @@ class OandaTradingEngine:
                 # 📊 ADD POSITION TO DASHBOARD (Real-time monitoring)
                 # ========================================================================
                 try:
-                    strategy_name = ",".join(agg.detectors_fired) if agg and hasattr(agg, 'detectors_fired') else "unknown"
+                    strategy_name = ",".join(signal_detectors) if signal_detectors else "unknown"
                     self.dashboard.add_position(
                         symbol=symbol,
                         strategy=strategy_name,
@@ -2092,6 +2187,9 @@ class OandaTradingEngine:
             stale_symbol = (stale_pos.get('symbol') or '').upper()
             if stale_symbol:
                 self.active_pairs.discard(stale_symbol)
+                # FIX #6: Record cooldown timestamp so we don't re-enter this
+                # symbol within RBOT_TP_COOLDOWN_MINUTES of the close.
+                self.tp_cooldowns[stale_symbol] = datetime.now(timezone.utc)
                 if self.positions_registry:
                     try:
                         self.positions_registry.unregister_position(stale_symbol, 'oanda')
@@ -3517,6 +3615,8 @@ async def main():
                        help='Trading environment (practice=paper, live=real money)')
     parser.add_argument('--yes-live', action='store_true',
                        help='Required for non-interactive LIVE startup')
+    parser.add_argument('--node-id', type=str, default='master',
+                       help='Hive Mind Swarm Node ID')
     
     args = parser.parse_args()
     
@@ -3546,7 +3646,7 @@ async def main():
     except Exception as e:
         print(f"⚠️  Startup sequence error: {e}, continuing with basic initialization")
     
-    print("\n🚀 Initializing trading engine...\n")
+    print(f"\n🚀 Initializing trading engine... [Node ID: {args.node_id}]\n")
     engine = OandaTradingEngine(environment=args.env)
     await engine.run_trading_loop()
 

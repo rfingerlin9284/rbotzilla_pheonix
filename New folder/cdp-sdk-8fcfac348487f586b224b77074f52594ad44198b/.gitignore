@@ -1,0 +1,105 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+.pytest_cache/
+.coverage
+htmlcov/
+.env
+.venv
+venv/
+ENV/
+**/.openapi-generator-ignore
+**/.openapi-generator/
+
+# Sphinx
+_build
+_static
+_templates
+
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.env
+.env.test
+.env.production
+coverage/
+dist/
+build/
+.next
+out/
+.DS_Store
+*.pem
+.vercel
+.turbo
+_cjs
+_esm
+_types
+
+# TypeScript
+*.tsbuildinfo
+typescript/docs
+typescript/docs-md
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.work
+vendor/
+go/docs
+
+# Java / Gradle
+.gradle/
+bin/
+*.class
+*.jar
+!gradle-wrapper.jar
+!gradle/wrapper/gradle-wrapper.jar
+*.war
+*.nar
+*.ear
+.classpath
+.project
+.settings/
+
+# OpenAPI
+openapi-preprocessed.yaml
+openapi_preprocessed.yaml
+
+# IDE / OS
+.idea/
+.vscode/
+.*.sw?
+.DS_Store
+
+# Build Output
+target/
+
+# Env files
+**/.env

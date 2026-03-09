@@ -19,6 +19,7 @@ Usage:
 import sys
 import time
 import argparse
+import subprocess
 from pathlib import Path
 
 # Add util to path
@@ -77,10 +78,10 @@ def print_menu():
     print("  exit                 - Exit this program")
     print("\n" + "="*100)
 
-def main():
     parser = argparse.ArgumentParser(description="Orchestrate professional trading")
     parser.add_argument('--auto', action='store_true', help='Run autonomously (no interactive menu)')
     parser.add_argument('--manual', action='store_true', help='Manual trading mode only')
+    parser.add_argument('--swarm', action='store_true', help='Boot the Hive Mind Cluster (3 trading engine instances)')
     parser.add_argument('--account', type=float, default=25000.0, help='Account balance')
     parser.add_argument('--repo', default='/home/rfing/RBOTZILLA_PHOENIX', help='Master repo path')
     
@@ -94,6 +95,21 @@ def main():
         account_balance=args.account,
     )
     
+    # Handle Swarm Boot
+    swarm_processes = []
+    if args.swarm:
+        print("🐝 INITIATING HIVE MIND SWARM (Spawn 3 Wolf Pack Engines) 🐝")
+        engine_path = Path(__file__).parent / "oanda_trading_engine.py"
+        python_exe = sys.executable
+        
+        for i in range(1, 4):
+            print(f"   🚀 Launching Wolf {i}...")
+            p = subprocess.Popen([python_exe, str(engine_path), "--node-id", str(i)],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            swarm_processes.append(p)
+            time.sleep(1) # stagger startup
+        print("✅ Swarm active in the background. They will aggregate via unified telemetry.\n")
+
     # Start trading operations
     orchestrator.start_trading(use_repo_sync=True)
     
@@ -292,6 +308,11 @@ def interactive_loop(orchestrator):
     except KeyboardInterrupt:
         print("\n⏹️  Stopping...")
         orchestrator.stop_trading()
+    finally:
+        if 'swarm_processes' in locals():
+            print("🐝 Shutting down Wolf Pack...")
+            for p in swarm_processes:
+                p.terminate()
 
 if __name__ == '__main__':
     main()

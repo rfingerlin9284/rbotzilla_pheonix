@@ -1,0 +1,53 @@
+version: "2"
+run:
+  issues-exit-code: 1
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - revive
+    - staticcheck
+    - unused
+    - godot
+  settings:
+    perfsprint:
+      strconcat: false
+    godot:
+      scope: declarations
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - godox
+        text: 'Line contains TODO/BUG/FIXME:'
+      - linters:
+          - dupl
+          - funlen
+          - gochecknoglobals
+          - maintidx
+          - scopelint
+          - testpackage
+          - wrapcheck
+        path: _test\.go
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+issues:
+  max-same-issues: 0
+formatters:
+  enable:
+    - gofmt
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

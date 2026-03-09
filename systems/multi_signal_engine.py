@@ -767,6 +767,7 @@ class AggregatedSignal:
         all_results: List[SignalResult],
         session: str,
         session_mult: float,
+        signal_type: str = "trend",   # FIX #4: "trend" | "mean_reversion" | "reversal"
     ):
         self.symbol         = symbol
         self.direction      = direction
@@ -783,6 +784,7 @@ class AggregatedSignal:
         self.all_results    = all_results
         self.session        = session
         self.session_mult   = session_mult
+        self.signal_type    = signal_type   # FIX #4: used by manage_open_trade
 
     def as_dict(self) -> dict:
         return {
@@ -797,6 +799,7 @@ class AggregatedSignal:
             "detectors":       self.detectors_fired,
             "session":         self.session,
             "session_mult":    self.session_mult,
+            "signal_type":     self.signal_type,
         }
 
 
@@ -843,16 +846,41 @@ def scan_symbol(
         return None
 
     # Aggregate SL/TP:
-    #   SL: most conservative (furthest from entry) for safety
-    #   TP: most aggressive (furthest from entry) for reward
+    #   SL: FIX #3 — use MEDIAN SL (not worst-case) so early BE trigger isn't
+    #       made noisier by one wide-SL detector dragging the group
+    #   TP: most aggressive (furthest from entry) for full reward capture
     #   Entry: last close (market order)
     entry = voted[0].entry  # all share same candle close
     if best_dir == "BUY":
-        sl = min(r.sl for r in voted)   # lowest SL protects most
-        tp = max(r.tp for r in voted)   # highest TP aims highest
+        # FIX #3: median of SLs, not the minimum (furthest away)
+        sls_sorted = sorted(r.sl for r in voted)
+        sl = sls_sorted[len(sls_sorted) // 2]   # median SL
+        tp = max(r.tp for r in voted)            # highest TP aims highest
     else:
-        sl = max(r.sl for r in voted)   # highest SL for short
-        tp = min(r.tp for r in voted)   # lowest TP aims lowest
+        sls_sorted = sorted((r.sl for r in voted), reverse=True)
+        sl = sls_sorted[len(sls_sorted) // 2]   # median SL for short
+        tp = min(r.tp for r in voted)            # lowest TP aims lowest
+
+    # FIX #4: classify signal type so trade manager applies correct logic
+    # Mean reversion alone → "mean_reversion"; reversal detectors only → "reversal"
+    # Any trend detector in the mix → "trend" (trend overrides)
+    _TREND_DETECTORS = {"momentum_sma", "ema_stack", "fibonacci", "fvg"}
+    _REVERSAL_DETECTORS = {"liq_sweep", "trap_reversal"}
+    fired_set = {r.detector for r in voted}
+    if fired_set & _TREND_DETECTORS:
+        signal_type = "trend"
+    elif fired_set & _REVERSAL_DETECTORS:
+        signal_type = "reversal"
+    elif "mean_reversion_bb" in fired_set:
+        signal_type = "mean_reversion"
+        # For pure mean reversion: TP is closer (to the middle band),
+        # so use the most conservative TP to avoid over-extending
+        if best_dir == "BUY":
+            tp = min(r.tp for r in voted)
+        else:
+            tp = max(r.tp for r in voted)
+    else:
+        signal_type = "trend"  # safe default
 
     # Weighted confidence = mean of voting detectors × session multiplier
     raw_conf = sum(r.confidence for r in voted) / len(voted)
@@ -873,6 +901,7 @@ def scan_symbol(
         all_results     = all_results,
         session         = session_name,
         session_mult    = session_mult,
+        signal_type     = signal_type,   # FIX #4
     )
 
 
@@ -898,6 +927,7 @@ def manage_open_trade(
     scaled_out: bool = False,
     trail_active: bool = False,
     session: Optional[str] = None,
+    signal_type: str = "trend",   # FIX #4: "trend"|"mean_reversion"|"reversal"
 ) -> Tuple[str, Dict[str, Any]]:
     """
     Given current price on an open trade, returns (action, detail_dict).
@@ -908,11 +938,21 @@ def manage_open_trade(
             • TRAIL threshold R profit  → Activate tight trail (trail at TRAIL_DIST_R × risk)
             • Price crosses back through prior trail level → Close all
             • Session ends (off_session) → Close all (prevent overnight drift)
+
+        FIX #1: R thresholds raised to be above M15 noise level:
+            BE: 0.30R → 0.75R  |  Scale: 1.0R → 1.5R  |  Trail: 1.25R → 2.0R
+        FIX #4: mean_reversion trades use tighter trail (1.0R) — they don't run far
     """
-    be_r_threshold = float(os.getenv("RBOT_BE_TRIGGER_R", "0.30"))
-    scale_r_threshold = float(os.getenv("RBOT_SCALE_OUT_TRIGGER_R", "1.00"))
-    trail_r_threshold = float(os.getenv("RBOT_TRAIL_TRIGGER_R", "1.25"))
-    trail_dist_r = float(os.getenv("RBOT_TRAIL_DISTANCE_R", "0.25"))
+    # FIX #1: raised defaults — old values caused BE at 3 pips (M15 noise)
+    be_r_threshold    = float(os.getenv("RBOT_BE_TRIGGER_R",         "0.75"))  # was 0.30
+    scale_r_threshold = float(os.getenv("RBOT_SCALE_OUT_TRIGGER_R",  "1.50"))  # was 1.00
+    trail_r_threshold = float(os.getenv("RBOT_TRAIL_TRIGGER_R",      "2.00"))  # was 1.25
+    trail_dist_r      = float(os.getenv("RBOT_TRAIL_DISTANCE_R",     "0.40"))  # was 0.25
+
+    # FIX #4: mean_reversion trades don't run far — tighten their trail trigger
+    if signal_type == "mean_reversion":
+        trail_r_threshold = min(trail_r_threshold, 1.00)
+        scale_r_threshold = min(scale_r_threshold, 0.80)
 
     profit_extraction_mode = os.getenv("RBOT_PROFIT_EXTRACTION_MODE", "1") == "1"
     session_name = str(session or "").lower()
@@ -970,12 +1010,34 @@ def manage_open_trade(
         detail["reason"] = "stop_breach"
         return (TradeAction.CLOSE_ALL, detail)
 
-    # Configured R+ → tight trail
-    if pnl_r >= trail_r_threshold and not trail_active:
-        detail["reason"] = f"{trail_r_threshold:.2f}R_trail_activate"
-        detail["new_sl"] = current_price - trail_dist_r * risk if direction == "BUY" \
-                           else current_price + trail_dist_r * risk
-        return (TradeAction.TRAIL_TIGHT, detail)
+    # Configured R+ → tight trail (with progressive tightening)
+    if pnl_r >= trail_r_threshold:
+        try:
+            from util.momentum_trailing import get_trailing_distance
+            
+            # Use original risk as a proxy for ATR in this framework
+            dynamic_trail_dist = get_trailing_distance(pnl_r, risk, momentum_active=False)
+            candidate_sl = current_price - dynamic_trail_dist if direction == "BUY" else current_price + dynamic_trail_dist
+            
+            # Prevent API spam: only update if SL improves by at least 10% of risk space
+            material_improvement = False
+            if direction == "BUY" and candidate_sl > (sl + 0.1 * risk):
+                material_improvement = True
+            elif direction == "SELL" and candidate_sl < (sl - 0.1 * risk):
+                material_improvement = True
+                
+            if material_improvement or not trail_active:
+                detail["reason"] = f"dynamic_trail_{pnl_r:.1f}R"
+                detail["new_sl"] = candidate_sl
+                return (TradeAction.TRAIL_TIGHT, detail)
+                
+        except ImportError:
+            # Fallback: Static trail if module missing
+            if not trail_active:
+                detail["reason"] = f"{trail_r_threshold:.2f}R_trail_activate"
+                detail["new_sl"] = current_price - trail_dist_r * risk if direction == "BUY" \
+                                   else current_price + trail_dist_r * risk
+                return (TradeAction.TRAIL_TIGHT, detail)
 
     # Configured R → scale out
     if pnl_r >= scale_r_threshold and not scaled_out:

@@ -295,12 +295,16 @@ class AggressivePortfolioMonitor:
         """Get current market price for a symbol"""
         if self.oanda_connector:
             try:
-                # This would call the real OANDA API
-                # For now, return None (real implementation would fetch)
-                return None
+                # Fetch real-time price snapshot
+                prices = self.oanda_connector.get_live_prices([symbol])
+                if prices and symbol in prices:
+                    p = prices[symbol]
+                    if p.get('mid') is not None:
+                        return p['mid']
+                    elif p.get('bid') is not None and p.get('ask') is not None:
+                        return (p['bid'] + p['ask']) / 2.0
             except Exception as e:
                 print(f"⚠️  Failed to get price for {symbol}: {e}")
-                return None
         return None
     
     def _estimate_atr(self, symbol: str) -> float:

@@ -36,6 +36,14 @@ except ImportError:
         def log_narration(*args, **kwargs): pass
         def log_pnl(*args, **kwargs): pass
 
+try:
+    from ..util.usd_converter import get_usd_notional
+except ImportError:
+    try:
+        from util.usd_converter import get_usd_notional
+    except ImportError:
+        def get_usd_notional(*args, **kwargs): return args[0] * args[2]
+
 # OCO integration
 try:
     from ..execution.smart_oco import OCOOrder, OCOStatus, create_oco_order
@@ -122,13 +130,10 @@ class OandaConnector:
         # Load API credentials from environment
         self._load_credentials()
         
-        # API endpoints
-        if environment == "live":
-            self.api_base = "https://api-fxtrade.oanda.com"
-            self.stream_base = "https://stream-fxtrade.oanda.com"
-        else:  # practice
-            self.api_base = "https://api-fxpractice.oanda.com"
-            self.stream_base = "https://stream-fxpractice.oanda.com"
+        # Force practice endpoints to prevent real money loss
+        self.api_base = "https://api-fxpractice.oanda.com"
+        self.stream_base = "https://stream-fxpractice.oanda.com"
+        self.logger.warning("USER OVERRIDE: OANDA is strictly locked to PRACTICE endpoints to prevent real money loss.")
         
         # Headers for API requests
         self.headers = {
@@ -161,13 +166,11 @@ class OandaConnector:
                         key, value = line.strip().split('=', 1)
                         os.environ[key] = value.strip('"\'')
         
-        # Get credentials from environment
-        if self.environment == "live":
-            self.api_token = os.getenv("OANDA_LIVE_TOKEN")
-            self.account_id = os.getenv("OANDA_LIVE_ACCOUNT_ID")
-        else:
-            self.api_token = os.getenv("OANDA_PRACTICE_TOKEN", "your_practice_token_here")
-            self.account_id = os.getenv("OANDA_PRACTICE_ACCOUNT_ID", "101-001-0000000-001")
+        # USER OVERRIDE: ALWAYS pull practice credentials to protect capital
+        self.api_token = os.getenv("OANDA_TOKEN") or os.getenv("OANDA_PRACTICE_TOKEN")
+        self.account_id = os.getenv("OANDA_ACCOUNT_ID") or os.getenv("OANDA_PRACTICE_ACCOUNT_ID")
+        
+        self.logger.info("OANDA is locked to PAPER/PRACTICE keys.")
         
         if not self.api_token or self.api_token == "your_practice_token_here":
             self.logger.warning(f"OANDA {self.environment} token not configured in .env")
@@ -177,12 +180,12 @@ class OandaConnector:
     
     def _validate_connection(self):
         """Validate OANDA connection and credentials"""
-        if self.environment == "live" and (not self.api_token or not self.account_id):
-            self.logger.warning("LIVE OANDA credentials not configured - trading will be disabled")
-        elif self.environment == "practice" and (not self.api_token or self.api_token == "your_practice_token_here"):
-            self.logger.warning("Practice OANDA credentials not configured - trading disabled until credentials are set")
+        if not self.api_token or not self.account_id:
+            self.logger.warning("Practice OANDA credentials not configured - trading disabled until credentials are set in .env using OANDA_TOKEN and OANDA_ACCOUNT_ID")
+            return False
         else:
-            self.logger.info(f"OANDA {self.environment} credentials validated")
+            self.logger.info(f"OANDA PRACTICE credentials validated securely.")
+            return True
 
     def _extract_trade_id_from_order_response(self, payload: Dict[str, Any]) -> str:
         """Best-effort extraction of broker trade id from OANDA order response payload."""
@@ -282,14 +285,8 @@ class OandaConnector:
             if RickCharter:
                 min_notional = RickCharter.MIN_NOTIONAL_USD
                 
-                # Calculate USD notional based on pair type
-                # For USD-based pairs (USD_XXX), units are already in USD
-                # For other pairs (XXX_USD), need to convert: units × price
-                base_currency = instrument.split("_")[0]
-                if base_currency == "USD":
-                    notional = abs(units)  # Units already in USD
-                else:
-                    notional = abs(units) * float(entry_price)  # Convert to USD
+                # Calculate USD notional accurately using the USD exchange rate for the base currency
+                notional = get_usd_notional(abs(units), instrument, float(entry_price), self) or (abs(units) * float(entry_price))
                 
                 if notional < min_notional:
                     # REJECT order instead of auto-adjusting

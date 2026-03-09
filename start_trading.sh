@@ -43,7 +43,9 @@ fi
 if [ "$ENV" = "live" ]; then
     echo ""
     echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${RED}⚠️  LIVE TRADING MODE - REAL MONEY AT RISK ⚠️${NC}"
+    echo -e "${RED}⚠️  LIVE TRADING MODE INITIALIZATION ⚠️${NC}"
+    echo -e "${YELLOW}   - OANDA: Locked to PRACTICE/PAPER tokens${NC}"
+    echo -e "${YELLOW}   - COINBASE: Live Capital (if configured)${NC}"
     echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     read -p "Type 'CONFIRM LIVE' to proceed: " CONFIRM
@@ -57,7 +59,7 @@ fi
 clear
 
 # Start the engine with startup sequence
-echo -e "${CYAN}Starting RBOTZILLA PHOENIX in ${BLUE}${ENV^^}${CYAN} mode...${NC}\n"
+echo -e "${CYAN}Starting RBOTZILLA PHOENIX (OANDA Hybrid Paper Mode)...${NC}\n"
 echo "Initializing comprehensive startup sequence..."
 echo ""
 
