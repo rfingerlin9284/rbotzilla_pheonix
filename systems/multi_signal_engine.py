@@ -128,8 +128,8 @@ _DEFAULT_SESSIONS = ["london", "new_york"]
 def session_bias(symbol: str, utc_now: Optional[datetime] = None) -> Tuple[str, float]:
     """
     Returns (active_session_name, confidence_multiplier).
-    Multiplier: 1.0 = prime session, 0.70 = off-session (still tradeable but
-    confidence is dampened so only genuinely strong setups survive the gate).
+    Multiplier: 1.0 = prime session, 0.90 = off-session (slight dampening;
+    still allows strong setups through — prevents near-total afternoon blackout).
     """
     if utc_now is None:
         utc_now = datetime.now(timezone.utc)
@@ -147,8 +147,8 @@ def session_bias(symbol: str, utc_now: Optional[datetime] = None) -> Tuple[str, 
         if sess in preferred:
             return (sess, 1.0)
     if active:
-        return (active[0], 0.80)
-    return ("off_session", 0.70)
+        return (active[0], 0.90)
+    return ("off_session", 0.90)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

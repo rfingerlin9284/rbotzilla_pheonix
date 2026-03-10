@@ -10,17 +10,6 @@
   },
   "tasks": [
     {
-      "label": "🩺 Run Diagnostics (Manual)",
-      "type": "shell",
-      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash scripts/rbot_ctl.sh diagnostics",
-      "presentation": {
-        "reveal": "always",
-        "panel": "new",
-        "title": "RBOTZILLA Diagnostics"
-      },
-      "problemMatcher": []
-    },
-    {
       "label": "🚀 Start Autonomous Engine (Headless)",
       "type": "shell",
       "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash scripts/rbot_ctl.sh start-auto",
@@ -36,18 +25,19 @@
       "problemMatcher": []
     },
     {
-      "label": "🔄 Restart & Refresh (Safe)",
+      "label": "📣 Narration Live (Plain English Activity Feed)",
       "type": "shell",
-      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash scripts/rbot_ctl.sh refresh",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash scripts/rbot_ctl.sh narration-live",
       "presentation": {
         "reveal": "always",
         "panel": "new",
-        "title": "RBOTZILLA Refresh"
+        "title": "📣 NARRATION LIVE"
       },
+      "isBackground": true,
       "problemMatcher": []
     },
     {
-      "label": "📟 Headless Monitor (Narration + Connection)",
+      "label": "📟 Headless Monitor (Health + Signals + PnL)",
       "type": "shell",
       "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash scripts/rbot_ctl.sh monitor",
       "presentation": {
@@ -59,18 +49,29 @@
       "problemMatcher": []
     },
     {
-      "label": "⏹ Shutdown",
+      "label": "🔄 Restart & Refresh (Safe)",
       "type": "shell",
-      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash scripts/rbot_ctl.sh shutdown",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash scripts/rbot_ctl.sh refresh",
       "presentation": {
         "reveal": "always",
-        "panel": "shared",
-        "title": "RBOTZILLA Stop"
+        "panel": "new",
+        "title": "RBOTZILLA Refresh"
       },
       "problemMatcher": []
     },
     {
-      "label": "📝 Live Engine Logs (Real-Time Stream)",
+      "label": "🩺 Run Diagnostics (Manual)",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash scripts/rbot_ctl.sh diagnostics",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "title": "RBOTZILLA Diagnostics"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "📝 Live Engine Logs (Raw Stream)",
       "type": "shell",
       "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash scripts/rbot_ctl.sh logs",
       "presentation": {
@@ -82,13 +83,24 @@
       "problemMatcher": []
     },
     {
-      "label": "🗣️ Live Narration JSON (Real-Time Stream)",
+      "label": "⏹ Shutdown Bot",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash scripts/rbot_ctl.sh shutdown",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "title": "RBOTZILLA Stop"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "🗣️ Narration JSON (Raw Stream)",
       "type": "shell",
       "command": "cd /home/rfing/RBOTZILLA_PHOENIX && tail -f narration.jsonl",
       "presentation": {
         "reveal": "always",
         "panel": "new",
-        "title": "Narration Stream"
+        "title": "Narration Raw"
       },
       "isBackground": true,
       "problemMatcher": []

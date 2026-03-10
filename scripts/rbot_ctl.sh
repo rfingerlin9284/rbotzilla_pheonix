@@ -85,7 +85,7 @@ start)
     require_venv
     mkdir -p "$ROOT/logs"
     rm -f /tmp/rbot_last_scan_key
-    RBOT_MIN_SIGNAL_CONFIDENCE=0.75 RBOT_BE_TRIGGER_R=0.25 RBOT_SCALE_OUT_TRIGGER_R=0.75 RBOT_TRAIL_TRIGGER_R=1.00 RBOT_TRAIL_DISTANCE_R=0.20 RBOT_PROFIT_EXTRACTION_MODE=1 RBOT_GREEN_LOCK_PIPS=1.5 RBOT_MAX_LOSS_USD_PER_TRADE=30 RBOT_ALLOW_EXTENDED_DOLLAR_STOP=0 RBOT_MAX_PAIRS_PER_PLATFORM=6 RBOT_MAX_ACTIVE_POSITIONS=6 nohup "$PYTHON" headless_runtime.py --broker all \
+    RBOT_MIN_SIGNAL_CONFIDENCE=0.62 RBOT_BE_TRIGGER_R=0.25 RBOT_SCALE_OUT_TRIGGER_R=0.75 RBOT_TRAIL_TRIGGER_R=1.00 RBOT_TRAIL_DISTANCE_R=0.20 RBOT_PROFIT_EXTRACTION_MODE=1 RBOT_GREEN_LOCK_PIPS=1.5 RBOT_MAX_LOSS_USD_PER_TRADE=30 RBOT_ALLOW_EXTENDED_DOLLAR_STOP=0 RBOT_MAX_PAIRS_PER_PLATFORM=12 RBOT_MAX_ACTIVE_POSITIONS=12 RBOT_MAX_NEW_TRADES_PER_CYCLE=6 nohup "$PYTHON" headless_runtime.py --broker all \
         >> "$LOG" 2>&1 &
     echo $! > "$PIDFILE"
     sleep 2
@@ -119,7 +119,7 @@ print('✅  Mode set to LIVE')
 "
     mkdir -p "$ROOT/logs"
     rm -f /tmp/rbot_last_scan_key
-    RBOT_MIN_SIGNAL_CONFIDENCE=0.75 RBOT_BE_TRIGGER_R=0.25 RBOT_SCALE_OUT_TRIGGER_R=0.75 RBOT_TRAIL_TRIGGER_R=1.00 RBOT_TRAIL_DISTANCE_R=0.20 RBOT_PROFIT_EXTRACTION_MODE=1 RBOT_GREEN_LOCK_PIPS=1.5 RBOT_MAX_LOSS_USD_PER_TRADE=30 RBOT_ALLOW_EXTENDED_DOLLAR_STOP=0 RBOT_MAX_PAIRS_PER_PLATFORM=6 RBOT_MAX_ACTIVE_POSITIONS=6 nohup "$PYTHON" headless_runtime.py --broker all \
+    RBOT_MIN_SIGNAL_CONFIDENCE=0.62 RBOT_BE_TRIGGER_R=0.25 RBOT_SCALE_OUT_TRIGGER_R=0.75 RBOT_TRAIL_TRIGGER_R=1.00 RBOT_TRAIL_DISTANCE_R=0.20 RBOT_PROFIT_EXTRACTION_MODE=1 RBOT_GREEN_LOCK_PIPS=1.5 RBOT_MAX_LOSS_USD_PER_TRADE=30 RBOT_ALLOW_EXTENDED_DOLLAR_STOP=0 RBOT_MAX_PAIRS_PER_PLATFORM=12 RBOT_MAX_ACTIVE_POSITIONS=12 RBOT_MAX_NEW_TRADES_PER_CYCLE=6 nohup "$PYTHON" headless_runtime.py --broker all \
         >> "$LOG" 2>&1 &
     echo $! > "$PIDFILE"
     sleep 2
@@ -668,6 +668,14 @@ save)
         git commit -m "$MSG"
         ok "Committed: $MSG"
     fi
+    ;;
+
+# ── narration-live ───────────────────────────────────────────────────────────
+narration-live)
+    hdr "NARRATION LIVE  (Plain English Activity Feed)"
+    require_venv
+    info "Launching live narration display — press Ctrl+C to exit"
+    "$PYTHON" "$ROOT/scripts/narration_live.py" "${@:2}"
     ;;
 
 # ── help ─────────────────────────────────────────────────────────────────────

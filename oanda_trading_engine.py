@@ -258,14 +258,14 @@ class OandaTradingEngine:
         self.scan_slow_seconds = int(os.getenv('RBOT_SCAN_SLOW_SECONDS', '300'))
         
         # Confidence gate — reject signals below this threshold
-        self.min_confidence = 0.75
+        self.min_confidence = 0.62
 
         # ── Multi-signal scan config (env-overridable) ────────────────────────
         # min_signal_confidence: final selection gate (above min_confidence)
         # max_new_trades_per_cycle: hard cap on new orders per loop iteration
         # scan_log_top_n: how many candidates/rejects to print each cycle
-        self.min_signal_confidence  = float(os.getenv('RBOT_MIN_SIGNAL_CONFIDENCE',  '0.75'))
-        self.max_new_trades_per_cycle = int(os.getenv('RBOT_MAX_NEW_TRADES_PER_CYCLE', '3'))
+        self.min_signal_confidence  = float(os.getenv('RBOT_MIN_SIGNAL_CONFIDENCE',  '0.62'))
+        self.max_new_trades_per_cycle = int(os.getenv('RBOT_MAX_NEW_TRADES_PER_CYCLE', '6'))
         self.scan_log_top_n         = int(os.getenv('RBOT_SCAN_LOG_TOP_N',           '8'))
         
         # Initialize Risk/Charter Subsystem
@@ -311,8 +311,8 @@ class OandaTradingEngine:
         }
         
         # Platform-specific pair management (env-overridable)
-        self.max_pairs_per_platform = int(os.getenv('RBOT_MAX_PAIRS_PER_PLATFORM', '6'))
-        self.max_active_positions = int(os.getenv('RBOT_MAX_ACTIVE_POSITIONS', '6'))
+        self.max_pairs_per_platform = int(os.getenv('RBOT_MAX_PAIRS_PER_PLATFORM', '12'))
+        self.max_active_positions = int(os.getenv('RBOT_MAX_ACTIVE_POSITIONS', '12'))
         self.active_pairs = set()  # Track active pairs on this platform
         self.global_active_pairs_file = '/tmp/rick_trading_global_pairs.json'  # Cross-platform tracking
 
@@ -1865,6 +1865,22 @@ class OandaTradingEngine:
                                 hedge_sl = h_entry + (hedge_sl_pips * pip_multiplier)
                                 hedge_tp = h_entry - (hedge_tp_pips * pip_multiplier)
                                 
+                            # CHARTER ENFORCEMENT: Ensure hedge meets $15,000 minimum
+                            try:
+                                h_notional = get_usd_notional(abs(hedge_units), hedge_position.symbol, h_entry, self.oanda) or (abs(hedge_units) * h_entry)
+                                if h_notional < self.min_notional_usd:
+                                    import math as _math
+                                    _usd_per_unit = get_usd_notional(1, hedge_position.symbol, h_entry, self.oanda)
+                                    if _usd_per_unit and _usd_per_unit > 0:
+                                        _h_req = _math.ceil(self.min_notional_usd / _usd_per_unit)
+                                    else:
+                                        _h_req = _math.ceil(self.min_notional_usd / h_entry)
+                                    _new_h_size = _math.ceil(max(abs(hedge_units), _h_req) / 100) * 100
+                                    hedge_units = _new_h_size if hedge_units > 0 else -_new_h_size
+                                    self.display.warning(f"⚠️  UPSIZING Hedge to meet Charter limits -> {abs(hedge_units):,} units")
+                            except Exception as e:
+                                self.display.error(f"Failed to check hedge charter size: {e}")
+                                
                             hedge_order_result = self.oanda.place_oco_order(
                                 instrument=hedge_position.symbol,
                                 entry_price=h_entry,
@@ -2404,7 +2420,7 @@ class OandaTradingEngine:
                     self.display.alert("AUTO_RESIZE enabled - closing undersized positions", "INFO")
                     self._auto_resize_undersized_positions()
                 else:
-                    self.display.info("💡 Set RBOT_AUTO_RESIZE_POSITIONS=1 to auto-close and reopen positions")
+                    self.display.info("Auto-Resize", "💡 Set RBOT_AUTO_RESIZE_POSITIONS=1 to auto-close and reopen positions")
             else:
                 self.display.success("✅ All positions are properly sized for new config")
             
@@ -2465,7 +2481,7 @@ class OandaTradingEngine:
                 if units < target_units * 0.80:
                     try:
                         # Close at market (or within 1 pip if market looks bad)
-                        self.display.info(f"   Closing {symbol} {direction} {units:,.0f} units "
+                        self.display.info("Auto-Resize", f"Closing {symbol} {direction} {units:,.0f} units "
                                          f"(undersized: {units:,.0f} vs target {target_units:,.0f})")
                         
                         self.oanda.close_trade(trade_id)
@@ -2479,7 +2495,7 @@ class OandaTradingEngine:
             
             if closed_count > 0:
                 self.display.success(f"✅ Closed {closed_count} undersized position(s) for resizing")
-                self.display.info("💡 Bot will reopen with new sizing on next scan cycle")
+                self.display.info("Auto-Resize", "💡 Bot will reopen with new sizing on next scan cycle")
                 log_narration(
                     event_type="POSITIONS_CLOSED_FOR_RESIZE",
                     details={
@@ -2938,7 +2954,7 @@ class OandaTradingEngine:
                         if confidence >= self.hive_trigger_confidence and consensus in (SignalStrength.STRONG_BUY, SignalStrength.STRONG_SELL):
                             if (direction == 'BUY' and consensus == SignalStrength.STRONG_BUY) or (direction == 'SELL' and consensus == SignalStrength.STRONG_SELL):
                                 hive_signal_confirmed = True
-                                self.display.info(f"Hive signal: {consensus.value} ({confidence:.2f}) for {symbol}", Colors.BRIGHT_CYAN)
+                                self.display.info("Hive Consensus", f"{consensus.value} ({confidence:.2f}) for {symbol}", Colors.BRIGHT_CYAN)
 
                     # Use MomentumDetector from rbotzilla_golden_age.py
                     if self.momentum_detector and profit_atr_multiple > 0:
@@ -2957,7 +2973,7 @@ class OandaTradingEngine:
 
                         if has_momentum:
                             momentum_signal_confirmed = True
-                            self.display.info(f"Momentum detected: {momentum_strength:.2f}x strength for {symbol} (profit: {profit_atr_multiple:.2f}x ATR)", Colors.BRIGHT_GREEN)
+                            self.display.info("Momentum", f"{momentum_strength:.2f}x strength for {symbol} (profit: {profit_atr_multiple:.2f}x ATR)", Colors.BRIGHT_GREEN)
                             
                             log_narration(
                                 event_type="MOMENTUM_DETECTED",
@@ -3290,7 +3306,7 @@ class OandaTradingEngine:
                 current_time = time.time()
                 if current_time - last_police_sweep >= police_sweep_interval:
                     try:
-                        self.display.info("🚓 Position Police sweep starting...")
+                        self.display.info("Position Police", "🚓 Sweep starting...", Colors.BRIGHT_MAGENTA)
                         _rbz_force_min_notional_position_police()
                         last_police_sweep = current_time
                         self.display.success("✅ Position Police sweep complete")
@@ -3651,9 +3667,6 @@ async def main():
     await engine.run_trading_loop()
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
-
 # ===== RBOTZILLA: POSITION POLICE (immutable min-notional) =====
 try:
     from rick_charter import RickCharter
@@ -3808,3 +3821,6 @@ try:
     _rbz_force_min_notional_position_police()
 except Exception as _e:
     print('[RBZ_POLICE] error', _e)
+
+if __name__ == '__main__':
+    asyncio.run(main())
