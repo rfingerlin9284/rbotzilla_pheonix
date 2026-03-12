@@ -54,12 +54,14 @@ PAIR_CLASS = {
     "EUR_USD":"major","GBP_USD":"major","USD_JPY":"major","USD_CHF":"major",
     "USD_CAD":"major","AUD_USD":"major","NZD_USD":"major",
     "EUR_GBP":"minor","EUR_JPY":"minor","GBP_JPY":"minor","AUD_JPY":"minor","CAD_JPY":"minor",
+    "EUR_AUD":"minor","EUR_NZD":"minor","EUR_CAD":"minor","GBP_AUD":"minor","GBP_NZD":"minor",
+    "AUD_NZD":"minor","AUD_CAD":"minor","AUD_CHF":"minor","NZD_JPY":"minor","CAD_CHF":"minor",
 }
 DEFAULTS = {
     # Step1 Trig, Step1 Lock, Step2 Trig, Trail Trig, Trail Pct
-    "major":  TightSL(0.0008, 0.00005, 0.0015, 0.0020, 0.0010), # ~8 pips, lock +0.5 pips. Step2 at 15 pips, Trail trigger at 20 pips
-    "minor":  TightSL(0.0010, 0.00010, 0.0018, 0.0025, 0.0012),
-    "exotic": TightSL(0.0015, 0.00010, 0.0025, 0.0030, 0.0015),
+    "major":  TightSL(0.0006, 0.00010, 0.0012, 0.0018, 0.0008), # Step1: 6 pips, Step2: 12 pips, Trail: 18 pips
+    "minor":  TightSL(0.0008, 0.00015, 0.0015, 0.0022, 0.0010), # Step1: 8 pips, Step2: 15 pips, Trail: 22 pips
+    "exotic": TightSL(0.0012, 0.00015, 0.0020, 0.0030, 0.0015), # Step1: 12 pips
 }
 SCALP_TAGS = {"scalp","micro","hf","intraday_fast"}
 SWING_TAGS = {"swing","position","carry","condor","range_swing"}

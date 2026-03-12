@@ -77,4 +77,4 @@ The current behavior is driven by these environment variables (configured in `rb
 | `RBOT_TRAIL_DISTANCE_R` | `0.35` | Distance to trail behind price (0.35x Risk). |
 | `RBOT_AUTO_RESIZE_POSITIONS` | `1` | **ACTIVE**: Resizes old small trades to the new larger compounding size. |
 | `RBOT_TP_COOLDOWN_MINUTES` | `3` | Wait only 3 minutes before retaking a pair after hitting TP. |
-| `RBOT_GREEN_LOCK_MIN_PROFIT` | `35.0` | Minimum pips profit before moving to Break-Even. |
+| `RBOT_GREEN_LOCK_MIN_PROFIT` | `10.0` | **AGGRESSIVE**: Move to Break-Even at 10 pips (~$80 profit). |
