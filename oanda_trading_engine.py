@@ -165,13 +165,15 @@ class OandaTradingEngine:
             self.hive_llm_orchestrator = None
         
         # Initialize Momentum System if available
-        if MOMENTUM_SYSTEM_AVAILABLE:
+        if MOMENTUM_SYSTEM_AVAILABLE and not RBZ_TRAILING_AVAILABLE:
             self.momentum_detector = MomentumDetector()
             self.trailing_system = SmartTrailingSystem()
-            self.display.success("✅ Momentum/Trailing system loaded")
+            self.display.success("✅ Legacy Momentum/Trailing system loaded")
         else:
             self.momentum_detector = None
             self.trailing_system = None
+            if RBZ_TRAILING_AVAILABLE:
+                self.display.success("🛡️  Legacy Trailing disabled (RBZ TightTrailing Active)")
         
         # Initialize Strategy Aggregator (combines 5 prototype strategies)
         try:
@@ -207,16 +209,22 @@ class OandaTradingEngine:
         # ========================================================================
         # MARGIN & CORRELATION GUARDIAN GATES (NEW)
         # ========================================================================
-        # Get account NAV for gate calculations — OandaAccount is a dataclass
-        account_nav = 10000.0  # safe fallback
+        # Get account NAV for gate calculations — Persist last known good value
+        self.last_known_nav_file = Path(__file__).parent / "logs" / "last_known_nav.txt"
+        account_nav = 10000.0
+        if self.last_known_nav_file.exists():
+            try:
+                account_nav = float(self.last_known_nav_file.read_text().strip())
+            except: pass
+
         try:
             if hasattr(self.oanda, 'get_account_info'):
                 account_info = self.oanda.get_account_info()
                 if account_info is not None:
-                    # OandaAccount dataclass: use .balance attribute
-                    account_nav = float(getattr(account_info, 'balance', None) or 10000.0)
+                    account_nav = float(getattr(account_info, 'balance', None) or account_nav)
+                    self.last_known_nav_file.write_text(str(account_nav))
         except Exception as e:
-            self.display.warning(f"⚠️  Could not fetch account NAV: {e}, using default $10k")
+            self.display.warning(f"⚠️  NAV Fetch Error: {e}, using persisted ${account_nav:,.2f}")
         
         self.gate = MarginCorrelationGate(account_nav=account_nav)
         self.current_positions = []  # Track positions for gate monitoring
@@ -257,14 +265,13 @@ class OandaTradingEngine:
         self.scan_fast_seconds = int(os.getenv('RBOT_SCAN_FAST_SECONDS', '60'))
         self.scan_slow_seconds = int(os.getenv('RBOT_SCAN_SLOW_SECONDS', '300'))
         
-        # Confidence gate — reject signals below this threshold
-        self.min_confidence = 0.62
+        # Confidence gate — aggregated floor for scan_symbol (raised 0.68→0.70, Dec-Quality standard)
+        # Each individual detector already requires ≥0.62; this is the MEAN across 3+ detectors.
+        self.min_confidence = 0.70
 
-        # ── Multi-signal scan config (env-overridable) ────────────────────────
-        # min_signal_confidence: final selection gate (above min_confidence)
-        # max_new_trades_per_cycle: hard cap on new orders per loop iteration
-        # scan_log_top_n: how many candidates/rejects to print each cycle
-        self.min_signal_confidence  = float(os.getenv('RBOT_MIN_SIGNAL_CONFIDENCE',  '0.62'))
+        # ── Multi-signal scan config (env-overridable) ─────────────────────────────────
+        # min_signal_confidence: FINAL gate applied after aggregation (env-overridable)
+        self.min_signal_confidence  = float(os.getenv('RBOT_MIN_SIGNAL_CONFIDENCE',  '0.68'))
         self.max_new_trades_per_cycle = int(os.getenv('RBOT_MAX_NEW_TRADES_PER_CYCLE', '6'))
         self.scan_log_top_n         = int(os.getenv('RBOT_SCAN_LOG_TOP_N',           '8'))
         
@@ -319,7 +326,10 @@ class OandaTradingEngine:
         # FIX #6: Per-symbol TP cooldown — prevents re-entry immediately after TP/SL
         # Maps symbol -> datetime of last close.  Blocks new entry for N minutes.
         self.tp_cooldowns: Dict[str, datetime] = {}
-        self.tp_cooldown_minutes: int = int(os.getenv('RBOT_TP_COOLDOWN_MINUTES', '15'))
+        self.tp_cooldown_minutes: int = int(os.getenv('RBOT_TP_COOLDOWN_MINUTES', '10'))  # Reduced from 30→10 min: prevents blocking re-entry on valid moves after a TP hit
+        # Per-symbol SL-rejection backoff: tracks last time a green-lock SL was rejected
+        # so we don't hammer OANDA with the same rejected price 16x in 45 seconds.
+        self._sl_rejection_backoff: Dict[str, float] = {}
 
         # TradeManager settings
         # Only consider converting TP -> trailing SL after 60 seconds
@@ -363,13 +373,11 @@ class OandaTradingEngine:
         
         self.display.success("✅ Connection resilience & auto-reconnect ENABLED")
 
-        # Wire tight trailing overrides (rbz_tight_trailing.py reference)
+        # Tight trailing stop + TP guard (wired later in __init__ to avoid early attribute errors)
         if RBZ_TRAILING_AVAILABLE:
-            try:
-                apply_rbz_overrides(connector=self.oanda, engine=self)
-                self.display.success("✅ RBZ tight trailing + TP guard wired")
-            except Exception as _rbz_err:
-                self.display.warning(f"⚠️  RBZ trailing wire failed: {_rbz_err}")
+            # Check for RBOT_TP_COOLDOWN_MINUTES override
+            self.tp_cooldown_minutes = int(os.getenv('RBOT_TP_COOLDOWN_MINUTES', '10'))
+            self.display.success(f"🛡️  RBZ TightTrailing Available (Cooldown: {self.tp_cooldown_minutes}m)")
         
         # Narration logging
         log_narration(
@@ -393,6 +401,14 @@ class OandaTradingEngine:
         self.display.success("✅ Position Dashboard initialized (60s refresh)")
         self.dashboard_task = None  # Track monitoring task
         
+        # Wire tight trailing overrides late to ensure all methods are available
+        if RBZ_TRAILING_AVAILABLE:
+            try:
+                apply_rbz_overrides(connector=self.oanda, engine=self)
+                self.display.success("✅ RBZ tight trailing + TP guard ACTIVE & WIRED")
+            except Exception as _rbz_err:
+                self.display.warning(f"⚠️  RBZ trailing wire skipped: {_rbz_err}")
+
         self._display_startup()
 
     def _load_trade_metadata_index(self):
@@ -595,8 +611,10 @@ class OandaTradingEngine:
         
         self.display.section("RISK PARAMETERS")
         self.display.info("Position Size", f"~{self.position_size:,} units (dynamic per pair)", Colors.BRIGHT_CYAN)
+        self.stop_loss_pips = getattr(self.charter, 'STOP_LOSS_PIPS', 10)
+        self.take_profit_pips = 54  # Increased to meet user's $75+ profit target (50 pips @ 15k units)
         self.display.info("Stop Loss", f"{self.stop_loss_pips} pips", Colors.BRIGHT_CYAN)
-        self.display.info("Take Profit", f"{self.take_profit_pips} pips (3.2:1 R:R)", Colors.BRIGHT_CYAN)
+        self.display.info("Take Profit", f"{self.take_profit_pips} pips (5.4:1 R:R)", Colors.BRIGHT_CYAN)
         self.display.info("Max Positions", f"{self.max_active_positions} concurrent", Colors.BRIGHT_CYAN)
         print()
         self.display.warning("⚠️  Charter requires $15k min notional - positions sized accordingly")
@@ -840,7 +858,10 @@ class OandaTradingEngine:
                     price_info = data['prices'][0]
                     bid = float(price_info['bids'][0]['price'])
                     ask = float(price_info['asks'][0]['price'])
-                    spread = round((ask - bid) * 10000, 1)  # in pips
+                    
+                    # Correct pip multiplier for JPY vs other pairs
+                    multiplier = 100 if 'JPY' in pair.upper() else 10000
+                    spread = round((ask - bid) * multiplier, 1)  # in pips
                     
                     return {
                         'bid': bid,
@@ -1040,12 +1061,24 @@ class OandaTradingEngine:
                 
                 # Build mock position view for correlation limit checks
                 existing_positions = {}
-                for order_id, pos in self.active_positions.items():
+                # Unified USD notional calculation for existing positions
+                for pos in self.active_positions.values():
                     pos_symbol = (pos.get('symbol') or '').upper()
                     units = float(pos.get('units') or 0)
-                    price = float(pos.get('entry_price') or entry_price)
+                    entry = float(pos.get('entry') or entry_price)
+                    
+                    # Convert to USD notional
+                    if '_USD' in pos_symbol:
+                        usd_notional = abs(units) * entry if pos_symbol.endswith('_USD') else abs(units)
+                    elif 'USD_' in pos_symbol:
+                        usd_notional = abs(units)
+                    else:
+                        # Fallback for cross: use entry price as a rough USD proxy if quote isn't USD
+                        # A better way would be using a mid-rate, but this is much safer than JPY units.
+                        usd_notional = abs(units) * 0.75 # AUD, NZD, CAD crosses are roughly 0.6-0.8 USD
+                    
                     if pos_symbol:
-                        existing_positions[pos_symbol] = {'notional': abs(units * price)}
+                        existing_positions[pos_symbol] = {'notional': usd_notional}
 
                 units = self.portfolio_orchestrator.margin_maximizer.calculate_position_size(
                     symbol=symbol,
@@ -1066,30 +1099,46 @@ class OandaTradingEngine:
         if max_notional < min_notional:
             max_notional = min_notional
         conf_floor = float(self.min_signal_confidence)
-        conf_cap = 0.95
+        conf_cap = 0.94
         conf = float(signal_confidence) if signal_confidence is not None else conf_floor
-        conf = max(0.0, min(conf, conf_cap))
-        if conf <= conf_floor:
-            scale = 0.0
-        else:
-            scale = (conf - conf_floor) / max(conf_cap - conf_floor, 1e-9)
-        scale = max(0.0, min(scale, 1.0))
+        conf = max(conf_floor, min(conf, conf_cap))
+        
+        # ── December-Style Quality Picking Logic: Power-Curve Scaling ──
+        # Rather than linear scaling, we use a power of 1.5 to 2.0. 
+        # This keeps 'meh' trades Small ($10k) and 'Ultra' trades Large ($30k+).
+        # This is the "Quality over Quantity" fix.
+        scale_raw = (conf - conf_floor) / max(conf_cap - conf_floor, 1e-9)
+        scale = max(0.0, min(scale_raw, 1.0)) ** 1.8  # Power curve for exponential conviction
+        
         target_notional = min_notional + (max_notional - min_notional) * scale
+        
+        # Bonus for Hive-amplified conviction (if scale is high)
+        if conf >= 0.88:
+             target_notional *= 1.25 # Extra 25% for "Home Runs"
+             target_notional = min(target_notional, max_notional * 1.5)
 
         parts = symbol.upper().split("_")
         base  = parts[0] if len(parts) == 2 else ""
         quote = parts[1] if len(parts) == 2 else ""
 
-        if base == "USD":
-            # USD_JPY, USD_CAD, USD_CHF
-            required_units = math.ceil(target_notional)
-        elif quote == "USD":
+        # Unified Unit Calculation for all pairs
+        if quote == "USD":
             # EUR_USD, GBP_USD, AUD_USD
             required_units = math.ceil(target_notional / entry_price)
+        elif base == "USD":
+            # USD_JPY, USD_CAD, USD_CHF
+            required_units = math.ceil(target_notional)
         else:
-            # Cross pair
-            required_units = math.ceil(target_notional / entry_price)
-
+            # Cross pair - need a rough conversion factor to target USD notional
+            # The entry price of EUR_AUD is 1.6 (AUD per EUR)
+            # 10,000 units of EUR_AUD = 10,000 EUR
+            # 10,000 EUR in USD is roughly $11,000 (at EUR_USD = 1.1)
+            # So for target_notional $11,000, we need 10,000 units.
+            # Scaling: units = target_notional / 1.1
+            # For simplicity and safety across all crosses, we'll use a 1.0 multiplier 
+            # and let the margin gate handle the final check.
+            required_units = math.ceil(target_notional * 0.9) # Conservative proxy for most EUR/GBP/AUD crosses
+            
         position_size = math.ceil(required_units / 100) * 100
         return position_size
     
@@ -1210,8 +1259,9 @@ class OandaTradingEngine:
         if abs(hedge_opp['correlation']) < 0.50:
             return {'execute': False, 'reason': f"Weak correlation ({hedge_opp['correlation']:.2f})"}
         
-        # RULE 3: High margin usage (>25%) - ALWAYS hedge to protect capital
-        if margin_utilization > 0.25:
+        # RULE 3: Extreme margin usage (>80%) only — hedge to protect capital
+        # Raised from 70% → 80% to avoid triggering on normal portfolio loads.
+        if margin_utilization > 0.80:
             return {
                 'execute': True, 
                 'reason': f'High margin usage ({margin_utilization:.1%}) - protective hedge required'
@@ -1224,14 +1274,9 @@ class OandaTradingEngine:
                 'reason': f'Large notional (${notional:,.0f}) - risk reduction hedge'
             }
         
-        # RULE 5: Multiple positions in same currency - Hedge cumulative exposure
-        usd_exposure_count = sum(1 for pos in self.current_positions 
-                                 if 'USD' in pos.symbol and pos.side == ("LONG" if direction == "BUY" else "SHORT"))
-        if usd_exposure_count >= 2:
-            return {
-                'execute': True,
-                'reason': f'Cumulative USD exposure ({usd_exposure_count + 1} positions) - correlation hedge'
-            }
+        # RULE 5: DISABLED — hedging on shared currency exposure caused phantom
+        # counter-trades that ate spread without reducing net risk.
+        # usd_exposure_count gate removed.
         
         # RULE 6: Strong inverse correlation (< -0.70) - Opportunistic hedge
         if hedge_opp['correlation'] < -0.70:
@@ -1240,12 +1285,9 @@ class OandaTradingEngine:
                 'reason': f"Strong inverse correlation ({hedge_opp['correlation']:.2f}) - optimal hedge opportunity"
             }
         
-        # RULE 7: Moderate margin (15-25%) + Strong correlation - Selective hedge
-        if 0.15 < margin_utilization <= 0.25 and hedge_opp['correlation'] < -0.65:
-            return {
-                'execute': True,
-                'reason': f'Moderate margin ({margin_utilization:.1%}) + strong correlation - proactive hedge'
-            }
+        # RULE 7: DISABLED — 15-25% margin + strong correlation was firing within
+        # the first 90 seconds of every new trade, opening immediate counter-trades.
+        # Re-enable only if you explicitly want proactive hedging at low margin %.
         
         # DEFAULT: Skip hedge for low-risk scenarios
         return {
@@ -1258,39 +1300,50 @@ class OandaTradingEngine:
                    signal_confidence: float = None,
                    signal_votes: int = None,
                    signal_detectors: list = None,
-                   signal_session: str = None):
+                   signal_session: str = None,
+                   signal_type: str = 'trend'):
         """Place Charter-compliant OCO order with full logging (environment-agnostic)"""
         try:
             # ========================================================================
-            # 🛡️ FIX #6: TP COOLDOWN — prevent re-entry immediately after close
+            # 🛡️ FIX #6: TP COOLDOWN — per symbol AND per signal_type
+            # A trend cooldown on GBP_USD should NOT block a mean_reversion or
+            # reversal entry on the same pair from a different detector set.
+            # Key format:  "SYMBOL:signal_type"  e.g. "GBP_USD:trend"
+            # Fallback (no signal_type known): "SYMBOL:any" — blocks all types.
             # ========================================================================
             _now_utc = datetime.now(timezone.utc)
-            _last_close = self.tp_cooldowns.get(symbol.upper())
-            if _last_close is not None:
-                _elapsed = (_now_utc - _last_close).total_seconds()
-                _cooldown_secs = self.tp_cooldown_minutes * 60
-                if _elapsed < _cooldown_secs:
-                    _remaining = int(_cooldown_secs - _elapsed)
-                    self.display.warning(
-                        f"⏳ TP_COOLDOWN_BLOCK: {symbol} — {_remaining}s remaining "
-                        f"(cooldown {self.tp_cooldown_minutes}min after close)"
-                    )
-                    log_narration(
-                        event_type="TP_COOLDOWN_BLOCK",
-                        details={
-                            "symbol": symbol,
-                            "last_close_utc": _last_close.isoformat(),
-                            "elapsed_seconds": round(_elapsed, 1),
-                            "cooldown_minutes": self.tp_cooldown_minutes,
-                            "remaining_seconds": _remaining,
-                        },
-                        symbol=symbol,
-                        venue="oanda"
-                    )
-                    return None
-                else:
-                    # Cooldown expired — clear it so the slot is free
-                    self.tp_cooldowns.pop(symbol.upper(), None)
+            _sig_type = signal_type or 'trend'
+            # Check both the specific type key AND the catch-all "any" key
+            _cooldown_keys_to_check = [f"{symbol.upper()}:{_sig_type}", f"{symbol.upper()}:any"]
+            for _ck in _cooldown_keys_to_check:
+                _last_close = self.tp_cooldowns.get(_ck)
+                if _last_close is not None:
+                    _elapsed = (_now_utc - _last_close).total_seconds()
+                    _cooldown_secs = self.tp_cooldown_minutes * 60
+                    if _elapsed < _cooldown_secs:
+                        _remaining = int(_cooldown_secs - _elapsed)
+                        self.display.warning(
+                            f"⏳ TP_COOLDOWN_BLOCK: {symbol} [{_sig_type}] — {_remaining}s remaining "
+                            f"(cooldown {self.tp_cooldown_minutes}min after close)"
+                        )
+                        log_narration(
+                            event_type="TP_COOLDOWN_BLOCK",
+                            details={
+                                "symbol": symbol,
+                                "signal_type": _sig_type,
+                                "cooldown_key": _ck,
+                                "last_close_utc": _last_close.isoformat(),
+                                "elapsed_seconds": round(_elapsed, 1),
+                                "cooldown_minutes": self.tp_cooldown_minutes,
+                                "remaining_seconds": _remaining,
+                            },
+                            symbol=symbol,
+                            venue="oanda"
+                        )
+                        return None
+                    else:
+                        # Cooldown expired — clear this specific key
+                        self.tp_cooldowns.pop(_ck, None)
 
             # ========================================================================
             # 🛡️ PAIR LIMIT CHECK (NEW - Per User Requirement)
@@ -1452,7 +1505,8 @@ class OandaTradingEngine:
 
                 # Re-check margin gate with new size
                 gate_order.units = position_size
-                _new_margin = position_size * (1.0 if _base == "USD" else entry_price) * 0.02
+                # FIX: Use normalized USD notional for margin calculation
+                _new_margin = notional_value * 0.03 # Using 3% as a safe buffer (OANDA is usually 2-3%)
                 _proj_pct = (current_margin_used + _new_margin) / max(self.gate.account_nav, 1)
                 if _proj_pct > self.gate.MARGIN_CAP_PCT:
                     self.display.error(
@@ -1971,7 +2025,11 @@ class OandaTradingEngine:
         if not self.hedge_engine:
             return False
 
-        trigger_usd = abs(float(os.getenv('RBOT_LOSS_HEDGE_TRIGGER_USD', '15')))
+        # LOSS HEDGE: disabled by default — the hedge was being rejected by
+        # ORDER_REJECTED_MIN_NOTIONAL (hedge notional < $15k) while still logging
+        # and consuming CPU.  Set RBOT_LOSS_HEDGE_TRIGGER_USD to a value below
+        # RBOT_MAX_LOSS_USD_PER_TRADE to re-enable when position sizing supports it.
+        trigger_usd = abs(float(os.getenv('RBOT_LOSS_HEDGE_TRIGGER_USD', '9999')))
         if unrealized_pnl > -trigger_usd:
             return False
 
@@ -1992,12 +2050,13 @@ class OandaTradingEngine:
             return False
 
         try:
+            # Ratio of 1.0 ensures hedge notional >= $15k charter minimum
             hedge_position = self.hedge_engine.execute_hedge(
                 primary_symbol=symbol,
                 primary_side=direction,
                 position_size=abs(float(units) or 0.0),
                 entry_price=entry_price,
-                hedge_ratio=float(os.getenv('RBOT_LOSS_HEDGE_RATIO', '0.60')),
+                hedge_ratio=float(os.getenv('RBOT_LOSS_HEDGE_RATIO', '1.0')),
             )
         except Exception:
             hedge_position = None
@@ -2203,9 +2262,12 @@ class OandaTradingEngine:
             stale_symbol = (stale_pos.get('symbol') or '').upper()
             if stale_symbol:
                 self.active_pairs.discard(stale_symbol)
-                # FIX #6: Record cooldown timestamp so we don't re-enter this
-                # symbol within RBOT_TP_COOLDOWN_MINUTES of the close.
-                self.tp_cooldowns[stale_symbol] = datetime.now(timezone.utc)
+                # FIX #6: On a stop-loss or unexpected close, set cooldown for ALL
+                # signal types on this symbol (key = "SYMBOL:any") so the pair
+                # can't immediately re-enter on any strategy type.
+                # On a graceful TP close (session_ended etc.) the close handler
+                # already sets the specific signal_type key.
+                self.tp_cooldowns[f"{stale_symbol}:any"] = datetime.now(timezone.utc)
                 if self.positions_registry:
                     try:
                         self.positions_registry.unregister_position(stale_symbol, 'oanda')
@@ -2317,7 +2379,7 @@ class OandaTradingEngine:
         - Margin utilization: 25-30% target (vs current 11.6%)
         """
         if not self.active_positions:
-            self.display.info("📊 Reoptimization", "No open positions to reoptimize")
+            self.display.info("📊 Reoptimization", "No open positions to reoptimize", Colors.BRIGHT_CYAN)
             return
         
         try:
@@ -2346,9 +2408,9 @@ class OandaTradingEngine:
             
             margin_calc = MarginMaximizer(
                 MarginConfig(
-                    risk_per_trade_min=0.10,   # 1.0%
-                    risk_per_trade_target=0.15, # 1.5% NEW CONFIG
-                    risk_per_trade_max=0.20     # 2.0%
+                    risk_per_trade_min=0.015,     # 1.5%
+                    risk_per_trade_target=0.020,  # 2.0% PROFESSIONAL COMPOUNDING
+                    risk_per_trade_max=0.025      # 2.5%
                 )
             )
             margin_calc.account_balance = account_balance
@@ -2409,8 +2471,8 @@ class OandaTradingEngine:
             
             if adjustments_needed:
                 print("   RECOMMENDATION:")
-                print("   Close and reopen undersized positions to align with new 1.5% risk config")
-                print("   This will increase position sizes by ~50% on average")
+                print("   Close and reopen undersized positions to align with Professional Compounding (2.0% risk)")
+                print("   This will increase position sizes to leverage account growth")
                 print("   New margin utilization target: 25-30% (currently {:.1f}%)".format(margin_pct))
                 print()
                 
@@ -2420,7 +2482,7 @@ class OandaTradingEngine:
                     self.display.alert("AUTO_RESIZE enabled - closing undersized positions", "INFO")
                     self._auto_resize_undersized_positions()
                 else:
-                    self.display.info("Auto-Resize", "💡 Set RBOT_AUTO_RESIZE_POSITIONS=1 to auto-close and reopen positions")
+                    self.display.info("Auto-Resize", "💡 Set RBOT_AUTO_RESIZE_POSITIONS=1 to auto-close and reopen positions", Colors.BRIGHT_CYAN)
             else:
                 self.display.success("✅ All positions are properly sized for new config")
             
@@ -2516,7 +2578,12 @@ class OandaTradingEngine:
         return current_price < entry_price
 
     def _enforce_green_sl(self, symbol: str, direction: str, entry_price: float, current_price: float, candidate_sl: float):
-        """If trade is green, force SL to remain in green by configured lock distance."""
+        """If trade is green, force SL to remain in green by configured lock distance.
+
+        FIX (2026-03-11): Requires RBOT_GREEN_LOCK_MIN_PROFIT_PIPS of actual profit
+        before activating. Previously fired with 0.1 pip profit, setting SL to
+        entry+5pips (inside the spread) → instant stop-outs on every trade.
+        """
         if candidate_sl is None:
             return candidate_sl, False, None
 
@@ -2529,8 +2596,18 @@ class OandaTradingEngine:
             return proposed, False, None
 
         pip_size = self._pip_size(symbol)
-        lock_pips = float(os.getenv('RBOT_GREEN_LOCK_PIPS', '1.5'))
+        lock_pips = float(os.getenv('RBOT_GREEN_LOCK_PIPS', '5.0'))
         lock_distance = lock_pips * pip_size
+
+        # ── Minimum profit gate ───────────────────────────────────────────────
+        # Do NOT activate until price has moved at least min_profit_pips beyond entry.
+        # Default = 15 pips (3x lock distance). Without this, SL lands inside spread
+        # = guaranteed instant stop-out.
+        min_profit_pips = float(os.getenv('RBOT_GREEN_LOCK_MIN_PROFIT_PIPS', '15.0'))
+        min_profit_distance = min_profit_pips * pip_size
+        actual_profit_distance = abs(current_price - entry_price)
+        if actual_profit_distance < min_profit_distance:
+            return proposed, False, None  # not far enough in profit — hold SL
 
         if (direction or '').upper() == 'BUY':
             green_floor = entry_price + lock_distance
@@ -2688,6 +2765,10 @@ class OandaTradingEngine:
                                 except Exception:
                                     pass
 
+                            # FIX: hard dollar stop must set cooldown so the pair
+                            # cannot immediately re-enter on the very next scan cycle.
+                            self.tp_cooldowns[symbol.upper()] = datetime.now(timezone.utc)
+
                             log_narration(
                                 event_type="HARD_DOLLAR_STOP",
                                 details={
@@ -2725,7 +2806,31 @@ class OandaTradingEngine:
                     pos_sl  = pos.get('stop_loss', 0)
                     pos_tp  = pos.get('take_profit', 0)
 
-                    # Get current price to calculate profit
+                    # ── RBZ Tight Trailing Hook ──────────────────────────────────
+                    # Calls _manage_trade on every active position so rbz_tight_trailing's
+                    # Two-Step SL lock + aggressive trail wrapper can execute.
+                    try:
+                        self._manage_trade({
+                            'id': broker_trade_id,
+                            'trade_id': broker_trade_id,
+                            'symbol': symbol,
+                            'instrument': symbol,
+                            'side': direction,
+                            'direction': direction,
+                            'entry': entry_price,
+                            'entry_price': entry_price,
+                            'sl': pos_sl,
+                            'stop_loss': pos_sl,
+                            'tp': pos_tp,
+                            'take_profit': pos_tp,
+                            'meta': pos.get('meta', {}),
+                            'strategy': pos.get('strategy_name') or pos.get('signal_type', 'trend'),
+                            'tags': set(pos.get('tags') or []),
+                        })
+                    except Exception:
+                        pass  # Never let trailing logic crash the main loop
+
+
                     try:
                         current_price_data = self.get_current_price(symbol)
                         if not current_price_data:
@@ -2749,27 +2854,41 @@ class OandaTradingEngine:
                             (direction == 'BUY' and green_sl_candidate > existing_sl)
                             or (direction == 'SELL' and green_sl_candidate < existing_sl)
                         ):
-                            try:
-                                self.oanda.set_trade_stop(broker_trade_id, green_sl_candidate)
-                                pos['stop_loss'] = green_sl_candidate
-                                pos_sl = green_sl_candidate
-                                log_narration(
-                                    event_type="GREEN_LOCK_ENFORCED",
-                                    details={
-                                        "symbol": symbol,
-                                        "trade_id": broker_trade_id,
-                                        "entry": entry_price,
-                                        "current_price": current_price,
-                                        "old_sl": existing_sl,
-                                        "new_sl": green_sl_candidate,
-                                        "green_floor": green_floor,
-                                        "green_lock_applied": True,
-                                    },
-                                    symbol=symbol,
-                                    venue="trade_manager"
-                                )
-                            except Exception as green_lock_err:
-                                self.display.warning(f"Green-lock enforcement failed for {symbol}: {green_lock_err}")
+                            # SL rejection backoff: if OANDA rejected this exact SL price
+                            # recently (within 60s), skip the API call entirely rather than
+                            # hammering the broker 16 times in 45 seconds.
+                            import time as _time
+                            _sl_key = f"{broker_trade_id}:{green_sl_candidate:.5f}"
+                            _last_rejection = self._sl_rejection_backoff.get(_sl_key, 0)
+                            _sl_backoff_ok = (_time.time() - _last_rejection) > 60
+                            if not _sl_backoff_ok:
+                                pass  # silently skip — still in backoff window
+                            else:
+                                try:
+                                    self.oanda.set_trade_stop(broker_trade_id, green_sl_candidate)
+                                    pos['stop_loss'] = green_sl_candidate
+                                    pos_sl = green_sl_candidate
+                                    # Clear any old backoff for this trade on success
+                                    self._sl_rejection_backoff.pop(_sl_key, None)
+                                    log_narration(
+                                        event_type="GREEN_LOCK_ENFORCED",
+                                        details={
+                                            "symbol": symbol,
+                                            "trade_id": broker_trade_id,
+                                            "entry": entry_price,
+                                            "current_price": current_price,
+                                            "old_sl": existing_sl,
+                                            "new_sl": green_sl_candidate,
+                                            "green_floor": green_floor,
+                                            "green_lock_applied": True,
+                                        },
+                                        symbol=symbol,
+                                        venue="trade_manager"
+                                    )
+                                except Exception as green_lock_err:
+                                    # Record rejection so we don't retry this exact price for 60s
+                                    self._sl_rejection_backoff[_sl_key] = _time.time()
+                                    self.display.warning(f"Green-lock SL rejected for {symbol} @ {green_sl_candidate:.5f} (backoff 60s): {green_lock_err}")
 
                     # ── Incremental position management (multi_signal_engine) ──
                     from systems.multi_signal_engine import manage_open_trade, TradeAction, session_bias
@@ -2950,11 +3069,48 @@ class OandaTradingEngine:
                             venue="hive"
                         )
 
-                        # Check hive consensus threshold
+                        # Check hive consensus threshold for TP conversion (STRONG signals)
                         if confidence >= self.hive_trigger_confidence and consensus in (SignalStrength.STRONG_BUY, SignalStrength.STRONG_SELL):
                             if (direction == 'BUY' and consensus == SignalStrength.STRONG_BUY) or (direction == 'SELL' and consensus == SignalStrength.STRONG_SELL):
                                 hive_signal_confirmed = True
                                 self.display.info("Hive Consensus", f"{consensus.value} ({confidence:.2f}) for {symbol}", Colors.BRIGHT_CYAN)
+
+                        # --- NEW: ADVANCED EARLY EXIT LOGIC (STOP THE BLEED) ---
+                        # If Hive consensus is OPPOSITE to our trade and confidence is high enough, 
+                        # and we are in profit drawdown (even small), exit early.
+                        is_opposite = (direction == 'BUY' and consensus in (SignalStrength.SELL, SignalStrength.STRONG_SELL)) or \
+                                      (direction == 'SELL' and consensus in (SignalStrength.BUY, SignalStrength.STRONG_BUY))
+                        
+                        if is_opposite and confidence >= 0.75 and profit_atr_multiple < -0.1:
+                            self.display.warning(f"🚨 HIVE REVERSAL: Closing {symbol} {direction} (Hive consensus is {consensus.value} @ {confidence:.2f})")
+                            try:
+                                self.oanda.close_trade(broker_trade_id)
+                                self.active_positions.pop(str(order_id), None)
+                                self.active_positions.pop(str(broker_trade_id), None)
+                                self.active_pairs.discard(symbol)
+                                if self.positions_registry:
+                                    try:
+                                        self.positions_registry.unregister_position(symbol, 'oanda')
+                                    except Exception: pass
+                                
+                                # Set cooldown to prevent immediate re-entry
+                                self.tp_cooldowns[symbol.upper()] = datetime.now(timezone.utc)
+
+                                log_narration(
+                                    event_type="HIVE_EARLY_EXIT",
+                                    details={
+                                        "symbol": symbol,
+                                        "consensus": consensus.value if hasattr(consensus, 'value') else str(consensus),
+                                        "confidence": confidence,
+                                        "pnl_atr": profit_atr_multiple,
+                                        "reason": "Hive Reversal detected during drawdown"
+                                    },
+                                    symbol=symbol,
+                                    venue="hive"
+                                )
+                                continue # Move to next position
+                            except Exception as _ce:
+                                self.display.error(f"Failed to execute Hive Early Exit for {symbol}: {_ce}")
 
                     # Use MomentumDetector from rbotzilla_golden_age.py
                     if self.momentum_detector and profit_atr_multiple > 0:
@@ -3255,6 +3411,17 @@ class OandaTradingEngine:
         
         self.display.stats_panel(stats)
     
+    def _manage_trade(self, trade: dict) -> None:
+        """
+        Per-trade management hook — called for each active position each cycle.
+        rbz_tight_trailing.py wraps this method via apply_rbz_overrides() to inject
+        the Two-Step SL lock + aggressive trailing stop logic.
+        Without this stub, the trailing wire fails silently and stops NEVER trail.
+        PIN: 841921 | IMMUTABLE HOOK — do not remove.
+        """
+        # Base: nothing to do — rbz_tight_trailing wrapper handles the real work
+        pass
+
     async def run_trading_loop(self):
         """Main trading loop (environment-agnostic)"""
         self.is_running = True
@@ -3366,13 +3533,13 @@ class OandaTradingEngine:
                         # ── fetch candles + run all detectors ───────────
                         try:
                             candles = self.oanda.get_historical_data(
-                                _candidate, count=150, granularity="M15"
+                                _candidate, count=250, granularity="M15"
                             )
                             agg = scan_symbol(
                                 _candidate, candles,
                                 utc_now=_utc_now,
-                                min_confidence=self.min_confidence,  # 0.55 vote floor
-                                min_votes=2,
+                                min_confidence=self.min_confidence,  # 0.68 aggregated floor
+                                min_votes=3,  # 3-of-9 detectors must agree (Dec 10 standard)
                             )
                         except Exception as _scan_err:
                             rejected.append({'symbol': _candidate,
@@ -3380,6 +3547,22 @@ class OandaTradingEngine:
                                              'conf': None, 'dir': None,
                                              'detail': str(_scan_err)})
                             continue
+
+                        # ── Hive Conflict Check ─────────────────────────
+                        if self.hive_mind:
+                            try:
+                                # Quick check to ensure we aren't scanning against the Hive consensus
+                                hive_analysis = self.hive_mind.delegate_analysis({'symbol': _candidate})
+                                hive_signal = (hive_analysis.consensus_signal.value or '').upper()
+                                if ('BUY' in hive_signal and agg.direction == 'SELL') or \
+                                   ('SELL' in hive_signal and agg.direction == 'BUY'):
+                                    rejected.append({'symbol': _candidate,
+                                                     'reason': 'hive_conflict',
+                                                     'conf': agg.confidence, 'dir': agg.direction,
+                                                     'detail': f"Hive suggests {hive_signal}"})
+                                    continue
+                            except Exception:
+                                pass # Don't block if hive fails
 
                         # ── not enough consensus ─────────────────────────
                         if agg is None:
@@ -3534,6 +3717,7 @@ class OandaTradingEngine:
                             signal_votes=agg.votes,
                             signal_detectors=agg.detectors_fired,
                             signal_session=agg.session,
+                            signal_type=getattr(agg, 'signal_type', 'trend'),
                         )
                         if trade_id:
                             if trade_id in self.active_positions:

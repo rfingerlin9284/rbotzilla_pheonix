@@ -12,32 +12,25 @@ from pathlib import Path
 
 @dataclass
 class MarginConfig:
-    """Margin usage configuration"""
+    """Margin usage configuration for Professional Compounding"""
     # Risk per trade (as % of account)
-    risk_per_trade_min: float = 0.10  # 1.0% minimum (OPTIMIZED for $200-500/day)
-    risk_per_trade_target: float = 0.15  # 1.5% target (AGGRESSIVE - larger positions)
-    risk_per_trade_max: float = 0.20  # 2.0% maximum (respects 35% margin cap)
+    risk_per_trade_min: float = 0.015  # 1.5% minimum floor
+    risk_per_trade_target: float = 0.020  # 2.0% target for COMPOUNDING growth
+    risk_per_trade_max: float = 0.025  # 2.5% maximum (professional limit)
     
-    # Position sizing
-    max_position_size_percent: float = 0.15  # Max 15% of account per symbol
-    min_position_size_usd: float = 1000.0  # Min $1000 notional per position
+    # Position sizing (Leverage-based)
+    # 5x - 10x leverage is standard for professional retail accounts
+    max_leverage_per_symbol: float = 8.0  # Max 8x leverage per symbol
+    min_position_size_usd: float = 10000.0  # Lowered to allow compounding to start from $6.8k
     
-    # Account balance thresholds for sizing
-    account_balance_breakpoints = {
-        10000: {'risk': 0.05, 'max_pos': 0.10},      # <$10k: conservative
-        25000: {'risk': 0.10, 'max_pos': 0.15},      # $25k: moderate
-        50000: {'risk': 0.15, 'max_pos': 0.20},      # $50k: aggressive
-        100000: {'risk': 0.20, 'max_pos': 0.25},     # $100k+: very aggressive
-    }
-    
-    # Correlation limits (don't stack too much capital in correlated pairs)
-    max_correlated_pair_exposure: float = 0.25  # Max 25% combined in EUR/GBP/CHF pairs
-    max_usd_pairs_exposure: float = 0.30  # Max 30% in all USD crosses
+    # Correlation limits (Leverage-based combined)
+    max_correlated_pair_exposure: float = 12.0  # Max 12x leverage in correlated groups
+    max_usd_pairs_exposure: float = 15.0  # Max 15x leverage in all USD crosses
     
     # Drawdown-based position reduction
     reduce_size_if_drawdown_above: float = 0.05  # If DD >5%, reduce position size
     size_reduction_amount: float = 0.50  # Reduce by 50%
-    position_size_recovery_after_profit: float = 0.10  # Resume normal sizing after 1% profit
+    position_size_recovery_after_profit: float = 0.01  # Resume normal sizing after 1% profit
 
 class MarginMaximizer:
     """
@@ -125,7 +118,8 @@ class MarginMaximizer:
         
         # Get target allocation % for this symbol
         risk_amount = self._get_risk_amount()
-        target_notional = risk_amount / 0.01  # Convert risk to notional
+        # Assume a standard 20-pip SL (0.0020) for "standard" allocation reporting
+        target_notional = risk_amount / 0.0020 
         target_percent = (target_notional / self.account_balance) * 100
         
         max_notional = self._get_max_position_notional(symbol, existing_positions)
@@ -143,12 +137,11 @@ class MarginMaximizer:
         }
     
     def _get_risk_amount(self) -> float:
-        """Get risk amount in USD based on account balance"""
-        if self.account_balance < 10000:
+        """Get risk amount in USD based on account balance (COMPOUNDING)"""
+        # Linear compounding risk
+        if self.account_balance < 5000:
             risk_pct = self.config.risk_per_trade_min
-        elif self.account_balance < 25000:
-            risk_pct = self.config.risk_per_trade_target
-        elif self.account_balance < 50000:
+        elif self.account_balance < 20000:
             risk_pct = self.config.risk_per_trade_target
         else:
             risk_pct = self.config.risk_per_trade_max
@@ -165,15 +158,8 @@ class MarginMaximizer:
         - Account balance %
         - Correlation with other open positions
         """
-        # Base limit: X% of account
-        if self.account_balance < 10000:
-            max_percent = 0.10  # 10%
-        elif self.account_balance < 50000:
-            max_percent = 0.15  # 15%
-        else:
-            max_percent = 0.20  # 20% for larger accounts
-        
-        max_notional = self.account_balance * max_percent
+        # Professional Leverage Limit: Limit notional to X times account balance
+        max_notional = self.account_balance * self.config.max_leverage_per_symbol
         
         # Reduce if too much capital already in correlated pairs
         corr_groups = {
@@ -214,8 +200,8 @@ class MarginMaximizer:
         print(f"Current Drawdown: {self.current_drawdown:.2f}%")
         print(f"Risk Per Trade: ${risk_amount:.2f} ({(risk_amount/account_balance)*100:.2f}%)")
         print(f"\nPosition Size Limits (by symbol):")
-        print(f"  Max Position Size: {(self.config.max_position_size_percent*100):.1f}% of account")
-        print(f"  Max Notional Per Symbol: ${account_balance * self.config.max_position_size_percent:,.2f}")
+        print(f"  Max Leverage: {self.config.max_leverage_per_symbol}x account balance")
+        print(f"  Max Notional Per Symbol: ${account_balance * self.config.max_leverage_per_symbol:,.2f}")
         print(f"  Min Position Size: ${self.config.min_position_size_usd:,.2f}")
         
         print(f"\nCorrelated Pair Limits:")
@@ -230,17 +216,11 @@ class MarginMaximizer:
 
 
 def create_margin_maximizer_config(account_balance: float) -> MarginConfig:
-    """Create a dynamic margin config based on account size"""
+    """Create a dynamic margin config based on account size (Professional Compounding)"""
     config = MarginConfig()
     
-    if account_balance < 10000:
-        config.risk_per_trade_target = 0.05
-        config.max_position_size_percent = 0.10
-    elif account_balance < 50000:
-        config.risk_per_trade_target = 0.10
-        config.max_position_size_percent = 0.15
-    else:
-        config.risk_per_trade_target = 0.15
-        config.max_position_size_percent = 0.20
+    # Standardize on aggressive compounding risk profile
+    config.risk_per_trade_target = 0.020  # 2.0% Risk Target
+    config.max_leverage_per_symbol = 8.0  # Allow 8x Leverage
     
     return config

@@ -269,7 +269,7 @@ class PortfolioOrchestrator:
         print(f"Master Repository: {self.master_repo_path}")
         print(f"\n🎯 MARGIN & POSITION SIZING:")
         print(f"  Risk Per Trade: {(self.margin_maximizer.config.risk_per_trade_target*100):.1f}% of account")
-        print(f"  Max Position per Symbol: {(self.margin_maximizer.config.max_position_size_percent*100):.0f}% of account")
+        print(f"  Max Leverage per Symbol: {self.margin_maximizer.config.max_leverage_per_symbol}x account balance")
         print(f"  Min Position Size: ${self.margin_maximizer.config.min_position_size_usd:,.2f}")
         print(f"\n🚨 RED ALERT SETTINGS:")
         print(f"  Exit Immediately If Loss > {(self.monitor.RED_ALERT_LOSS_PERCENT*100):.1f}%")

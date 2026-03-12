@@ -31,36 +31,36 @@ _DEFS: List[tuple[StrategyMetadata, type]] = [
     # ── Tier 1 — gold: highest edge, institutional alignment ─────────────────
     (
         _fx("INST_SD",   "Institutional Supply & Demand",  "gold",
-            ["M15","H1"], 240, 3.5, 0.58),
+            ["M15","H1"], 240, 2.5, 0.58),
         InstitutionalSupplyDemandStrategy,
     ),
     (
         _fx("LIQ_SWEEP", "Liquidity Sweep Reversal",       "gold",
-            ["M5","M15"], 120, 3.2, 0.56),
+            ["M5","M15"], 120, 2.2, 0.56),
         LiquiditySweepReversalStrategy,
     ),
     (
         _fx("TRAP_REV",  "Trap Reversal Scalper",          "gold",
-            ["M5","M15"], 90,  3.2, 0.55),
+            ["M5","M15"], 90,  2.0, 0.55),
         TrapReversalScalperStrategy,
     ),
     (
         _fx("HOLY_GRAIL","Price Action Holy Grail",        "gold",
-            ["M15","H1"], 180, 3.0, 0.54),
+            ["M15","H1"], 180, 2.2, 0.54),
         PriceActionHolyGrailStrategy,
     ),
 
     # ── Tier 2 — silver: good edge, slightly noisier ─────────────────────────
     (
         _fx("FIB_BRK",   "Fibonacci Confluence Breakout",  "silver",
-            ["M15","H1"], 240, 3.5, 0.52),
+            ["M15","H1"], 240, 2.5, 0.52),
         FibConfluenceBreakoutStrategy,
     ),
     (
         StrategyMetadata(
             name="Crypto / Vol Breakout", code="CRYPTO_BRK", priority="silver",
             markets=["FX","CRYPTO"], base_timeframes=["M15","H1"],
-            max_hold_minutes=180, target_rr=3.2, est_win_rate=0.50,
+            max_hold_minutes=180, target_rr=2.5, est_win_rate=0.50,
         ),
         CryptoBreakoutStrategy,
     ),

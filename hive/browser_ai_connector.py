@@ -43,13 +43,13 @@ except ImportError:
 # CONFIGURATION
 # ============================================================================
 
-PROJECT_ROOT = Path(__file__).parent.resolve())
+PROJECT_ROOT = Path(__file__).parent.resolve()
 LOGS_DIR = PROJECT_ROOT / "pre_upgrade" / "headless" / "logs"
 BROWSER_CACHE_DIR = PROJECT_ROOT / ".browser_cache"
 
 # AI Service URLs
 AI_SERVICES = {
-    "chatgpt": "https://chat.openai.com/",
+    "chatgpt": "https://chatgpt.com/",
     "grok": "https://x.com/i/grok",
     "deepseek": "https://chat.deepseek.com/",
     "perplexity": "https://www.perplexity.ai/"

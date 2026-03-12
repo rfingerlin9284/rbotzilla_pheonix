@@ -56,9 +56,10 @@ PAIR_CLASS = {
     "EUR_GBP":"minor","EUR_JPY":"minor","GBP_JPY":"minor","AUD_JPY":"minor","CAD_JPY":"minor",
 }
 DEFAULTS = {
-    "major":  TightSL(0.0020,-0.0003,0.0040,0.0070,0.0020),
-    "minor":  TightSL(0.0025,-0.0003,0.0045,0.0080,0.0022),
-    "exotic": TightSL(0.0030,-0.0004,0.0050,0.0100,0.0025),
+    # Step1 Trig, Step1 Lock, Step2 Trig, Trail Trig, Trail Pct
+    "major":  TightSL(0.0008, 0.00005, 0.0015, 0.0020, 0.0010), # ~8 pips, lock +0.5 pips. Step2 at 15 pips, Trail trigger at 20 pips
+    "minor":  TightSL(0.0010, 0.00010, 0.0018, 0.0025, 0.0012),
+    "exotic": TightSL(0.0015, 0.00010, 0.0025, 0.0030, 0.0015),
 }
 SCALP_TAGS = {"scalp","micro","hf","intraday_fast"}
 SWING_TAGS = {"swing","position","carry","condor","range_swing"}

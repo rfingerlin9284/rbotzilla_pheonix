@@ -40,7 +40,7 @@ except ImportError:
 # CONFIGURATION
 # ============================================================================
 
-PROJECT_ROOT = Path(__file__).parent.resolve())
+PROJECT_ROOT = Path(__file__).parent.resolve()
 LOGS_DIR = PROJECT_ROOT / "pre_upgrade" / "headless" / "logs"
 
 @dataclass

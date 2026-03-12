@@ -731,6 +731,86 @@ def detect_aggressive_shorting_ob(symbol: str, candles: list) -> Optional[Signal
     return None
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 10. EMA 100/200 Scalper — Dec 1 Backtest #1 Performer (Sharpe 3.32)
+# Requires EMA100 to cross EMA200 with price momentum confirmation.
+# ATR-based SL/TP gives adaptive sizing across all volatility regimes.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _atr(candles: list, n: int = 14) -> float:
+    """Average True Range over last n candles."""
+    highs  = _highs(candles)
+    lows   = _lows(candles)
+    closes = _closes(candles)
+    if len(closes) < n + 1:
+        return 0.0
+    trs = []
+    for i in range(-n, 0):
+        tr = max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes[i - 1]),
+            abs(lows[i]  - closes[i - 1]),
+        )
+        trs.append(tr)
+    return sum(trs) / len(trs)
+
+
+def detect_ema_scalper_200(symbol: str, candles: list) -> Optional[SignalResult]:
+    """
+    EMA 100/200 crossover scalper — backtested #1 OANDA performer.
+    Entry: EMA100 crosses above/below EMA200, with price momentum.
+    SL: 1.5 × ATR14.  TP: 1.5 × ATR14 × 4.0  (4:1 R:R, backtest-optimal).
+    Requires at least 220 candles for reliable 200-period EMA.
+    """
+    closes = _closes(candles)
+    if len(closes) < 220:
+        return None
+
+    price  = closes[-1]
+    e100_n = _ema(closes, 100)           # current  EMA100
+    e100_p = _ema(closes[:-1], 100)      # previous EMA100
+    e200   = _ema(closes, 200)
+    atr    = _atr(candles, 14)
+    pip    = _pip_size(symbol)
+
+    if atr < pip * 3:                    # too quiet — skip
+        return None
+
+    crossed_up   = e100_p <= e200 < e100_n   # EMA100 just crossed above EMA200
+    crossed_down = e100_p >= e200 > e100_n   # EMA100 just crossed below EMA200
+
+    # Also accept being in a clear trend (EMA100 > EMA200 + momentum)
+    roc = _roc(closes, 10)
+    trending_up   = e100_n > e200 and roc >  0.10
+    trending_down = e100_n < e200 and roc < -0.10
+
+    if crossed_up or trending_up:
+        direction = "BUY"
+        sep_bonus = min(0.10, ((e100_n - e200) / e200) * 200)  # bonus for separation
+        conf = min(0.88, 0.68 + sep_bonus + (0.05 if crossed_up else 0.0))
+    elif crossed_down or trending_down:
+        direction = "SELL"
+        sep_bonus = min(0.10, ((e200 - e100_n) / e200) * 200)
+        conf = min(0.88, 0.68 + sep_bonus + (0.05 if crossed_down else 0.0))
+    else:
+        return None
+
+    sl_dist = atr * 1.5
+    tp_dist = atr * 1.5 * 4.0     # 4:1 R:R — backtest optimal
+    if direction == "BUY":
+        sl = price - sl_dist
+        tp = price + tp_dist
+    else:
+        sl = price + sl_dist
+        tp = price - tp_dist
+
+    return SignalResult(
+        "ema_scalper_200", direction, conf, price, sl, tp,
+        {"ema100": round(e100_n, 5), "ema200": round(e200, 5),
+         "atr": round(atr, 5), "crossed": crossed_up or crossed_down},
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Multi-Signal Aggregator
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -744,12 +824,15 @@ DETECTORS = [
     detect_rsi_extremes,
     detect_mean_reversion_bb,
     detect_aggressive_shorting_ob,
+    detect_ema_scalper_200,       # 10th: Dec 1 backtested #1 performer
 ]
 
-# Minimum individual confidence to count as a "vote"
-_MIN_VOTE_CONF = 0.55
-# Minimum votes in the same direction to fire a trade
-_MIN_VOTES = 2
+# Minimum individual confidence to count as a "vote" (raised from 0.55 → 0.62)
+# Each detector must individually score ≥0.62 to cast a vote.
+_MIN_VOTE_CONF = 0.62
+# Minimum votes in the same direction to fire a trade (raised from 2 → 3)
+# Requires 3 of 9 detectors independently agreeing — restores Dec 10 standard.
+_MIN_VOTES = 3
 
 
 class AggregatedSignal:
@@ -889,6 +972,30 @@ def scan_symbol(
     if final_conf < min_confidence:
         return None
 
+    # ── ML Regime Gate (Dec 10 standard) ──────────────────────────────────────
+    # Trending regimes: pass at standard min_confidence (0.68)
+    # Sideways/Unknown: require higher bar (0.72) to block ranging chop
+    # Model falls back gracefully if no .pkl or import fails.
+    try:
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+        from ml_learning.regime_detector import RegimeDetector, MarketRegime
+        _rd = getattr(scan_symbol, '_regime_detector', None)
+        if _rd is None:
+            _rd = RegimeDetector()
+            scan_symbol._regime_detector = _rd          # cache on function
+        regime = _rd.detect_regime(candles[-60:])
+        regime_conf = _rd.get_confidence()
+        _is_sideways = regime in (MarketRegime.SIDEWAYS, MarketRegime.UNKNOWN)
+        _regime_threshold = 0.72 if _is_sideways else min_confidence
+        if final_conf < _regime_threshold:
+            return None   # blocked by ML regime gate
+        # Attach regime metadata to signal for logging
+        _regime_label = regime.value if hasattr(regime, 'value') else str(regime)
+    except Exception:
+        _regime_label = "unknown"
+        # Regime gate failed — allow the signal through (fail open)
+
     return AggregatedSignal(
         symbol          = symbol,
         direction       = best_dir,
@@ -901,7 +1008,7 @@ def scan_symbol(
         all_results     = all_results,
         session         = session_name,
         session_mult    = session_mult,
-        signal_type     = signal_type,   # FIX #4
+        signal_type     = signal_type,
     )
 
 

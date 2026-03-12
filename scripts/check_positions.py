@@ -177,9 +177,18 @@ def main():
         tf = _fmt_unknown(meta.get("signal_timeframe"))
         session = _fmt_unknown(meta.get("signal_session") or meta.get("session"))
         mgmt = _fmt_unknown(meta.get("management_profile"))
+        
+        # Determine if trailing is active from engine state or metadata heuristics
+        # Note: in real-time we'd query the engine, but we rely on metadata/profile context here
+        is_trailing = False
+        # If it's a winning trade and has trail parameters
+        if pnl > 0 and "trail" in str(mgmt).lower() and ("2R->trail" in str(mgmt) and pips > 15):
+             is_trailing = True
+             
+        trail_badge = "\033[92m[ ✅ TRAILING ACTIVE ]\033[0m" if is_trailing else ""
 
         print(f"    Signal: conf={conf}, votes={votes}, strat={strat}, tf={tf}, session={session}")
-        print(f"    Mgmt : {mgmt}")
+        print(f"    Mgmt : {mgmt} {trail_badge}")
     print(f"{'═'*66}\n")
 
 if __name__ == "__main__":

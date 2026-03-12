@@ -3,9 +3,7 @@
   "options": {
     "shell": {
       "executable": "/bin/bash",
-      "args": [
-        "-c"
-      ]
+      "args": ["-c"]
     }
   },
   "tasks": [
@@ -13,96 +11,153 @@
       "label": "🚀 Start Autonomous Engine (Headless)",
       "type": "shell",
       "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash scripts/rbot_ctl.sh start-auto",
-      "group": {
-        "kind": "build",
-        "isDefault": true
-      },
-      "presentation": {
-        "reveal": "always",
-        "panel": "new",
-        "title": "RBOTZILLA Start"
-      },
+      "group": { "kind": "build", "isDefault": true },
+      "presentation": { "reveal": "always", "panel": "new", "title": "RBOTZILLA Start" },
       "problemMatcher": []
     },
+
     {
-      "label": "📣 Narration Live (Plain English Activity Feed)",
+      "label": "🔄 Reload & Apply Code Changes (Hot Restart)",
+      "detail": "Stops bot → waits 3s → restarts with all latest code changes active. Bot re-syncs open positions from OANDA on startup — nothing is lost.",
       "type": "shell",
-      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash scripts/rbot_ctl.sh narration-live",
-      "presentation": {
-        "reveal": "always",
-        "panel": "new",
-        "title": "📣 NARRATION LIVE"
-      },
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && echo '⏹  Stopping bot...' && bash scripts/rbot_ctl.sh stop && sleep 3 && echo '🚀 Restarting with latest code...' && bash scripts/rbot_ctl.sh start-auto && echo '✅ Bot restarted. New code is now live.'",
+      "presentation": { "reveal": "always", "panel": "new", "clear": true, "focus": true, "title": "🔄 Reload & Apply Changes" },
+      "problemMatcher": []
+    },
+
+    {
+      "label": "📡 Reconnect After Internet Loss",
+      "detail": "Waits for OANDA API to come back online, then performs a clean restart. Run this whenever your connection drops and comes back.",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && TOKEN=$(grep -E '^OANDA_TOKEN=' .env | cut -d= -f2 | tr -d '\"') && echo '📡 Waiting for OANDA API to come back...' && until curl -sf --max-time 5 https://api-fxpractice.oanda.com/v3/instruments/EUR_USD/candles?count=1 -H \"Authorization: Bearer $TOKEN\" > /dev/null; do echo '  ⏳ Still offline — retrying in 15s...'; sleep 15; done && echo '✅ OANDA API is back online!' && bash scripts/rbot_ctl.sh stop && sleep 2 && bash scripts/rbot_ctl.sh start-auto && echo '✅ Bot reconnected and running.'",
+      "presentation": { "reveal": "always", "panel": "new", "clear": true, "focus": true, "title": "📡 Reconnect" },
+      "problemMatcher": []
+    },
+
+    {
+      "label": "🛡️ Start Order Watchdog (Background Monitor)",
+      "detail": "Monitors the live log for SL failures, precision errors, loss hedges, margin blowouts. Alerts instantly and auto-fixes what the main bot misses.",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash scripts/rbot_ctl.sh watchdog",
+      "presentation": { "reveal": "always", "panel": "new", "clear": true, "focus": false, "title": "🛡️ Order Watchdog" },
       "isBackground": true,
       "problemMatcher": []
     },
+
     {
-      "label": "📟 Headless Monitor (Health + Signals + PnL)",
+      "label": "🔄 Restart + Recover State",
+      "detail": "Stop → wait 3s → restart. Bot re-reads all open OANDA trades on startup and restores position tracking.",
       "type": "shell",
-      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash scripts/rbot_ctl.sh monitor",
-      "presentation": {
-        "reveal": "always",
-        "panel": "new",
-        "title": "RBOTZILLA Monitor"
-      },
-      "isBackground": true,
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash scripts/rbot_ctl.sh stop && sleep 3 && bash scripts/rbot_ctl.sh start-auto",
+      "presentation": { "reveal": "always", "panel": "new", "clear": true, "focus": true, "title": "🔄 Restart + Recover" },
       "problemMatcher": []
     },
+
     {
-      "label": "🔄 Restart & Refresh (Safe)",
+      "label": "🔄 Restart & Refresh (Safe — with diagnostics)",
       "type": "shell",
       "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash scripts/rbot_ctl.sh refresh",
-      "presentation": {
-        "reveal": "always",
-        "panel": "new",
-        "title": "RBOTZILLA Refresh"
-      },
+      "presentation": { "reveal": "always", "panel": "new", "title": "RBOTZILLA Refresh" },
       "problemMatcher": []
     },
-    {
-      "label": "🩺 Run Diagnostics (Manual)",
-      "type": "shell",
-      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash scripts/rbot_ctl.sh diagnostics",
-      "presentation": {
-        "reveal": "always",
-        "panel": "new",
-        "title": "RBOTZILLA Diagnostics"
-      },
-      "problemMatcher": []
-    },
-    {
-      "label": "📝 Live Engine Logs (Raw Stream)",
-      "type": "shell",
-      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash scripts/rbot_ctl.sh logs",
-      "presentation": {
-        "reveal": "always",
-        "panel": "new",
-        "title": "Engine Logs"
-      },
-      "isBackground": true,
-      "problemMatcher": []
-    },
+
     {
       "label": "⏹ Shutdown Bot",
       "type": "shell",
       "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash scripts/rbot_ctl.sh shutdown",
-      "presentation": {
-        "reveal": "always",
-        "panel": "shared",
-        "title": "RBOTZILLA Stop"
-      },
+      "presentation": { "reveal": "always", "panel": "shared", "title": "RBOTZILLA Stop" },
       "problemMatcher": []
     },
+
+    {
+      "label": "📊 Status (Running? Mode? PID?)",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash scripts/rbot_ctl.sh status",
+      "presentation": { "reveal": "always", "panel": "shared", "clear": true, "focus": true, "title": "RBOTZILLA Status" },
+      "problemMatcher": []
+    },
+
+    {
+      "label": "💰 Check Open Positions + PnL",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash scripts/rbot_ctl.sh check-positions",
+      "presentation": { "reveal": "always", "panel": "shared", "clear": true, "focus": true, "title": "Open Positions" },
+      "problemMatcher": []
+    },
+
+    {
+      "label": "🏦 OANDA API Ping + Account Balance",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash scripts/rbot_ctl.sh check-api",
+      "presentation": { "reveal": "always", "panel": "shared", "clear": true, "focus": true, "title": "OANDA API Check" },
+      "problemMatcher": []
+    },
+
+    {
+      "label": "📣 Narration Live (Plain English Activity Feed)",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash scripts/rbot_ctl.sh narration-live",
+      "presentation": { "reveal": "always", "panel": "new", "title": "📣 NARRATION LIVE" },
+      "isBackground": true,
+      "problemMatcher": []
+    },
+
+    {
+      "label": "📟 Headless Monitor (Health + Signals + PnL)",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash scripts/rbot_ctl.sh monitor",
+      "presentation": { "reveal": "always", "panel": "new", "title": "RBOTZILLA Monitor" },
+      "isBackground": true,
+      "problemMatcher": []
+    },
+
+    {
+      "label": "📝 Live Engine Logs (Raw Stream)",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash scripts/rbot_ctl.sh logs",
+      "presentation": { "reveal": "always", "panel": "new", "title": "Engine Logs" },
+      "isBackground": true,
+      "problemMatcher": []
+    },
+
     {
       "label": "🗣️ Narration JSON (Raw Stream)",
       "type": "shell",
       "command": "cd /home/rfing/RBOTZILLA_PHOENIX && tail -f narration.jsonl",
-      "presentation": {
-        "reveal": "always",
-        "panel": "new",
-        "title": "Narration Raw"
-      },
+      "presentation": { "reveal": "always", "panel": "new", "title": "Narration Raw" },
       "isBackground": true,
+      "problemMatcher": []
+    },
+
+    {
+      "label": "🩺 Run Diagnostics (Manual)",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash scripts/rbot_ctl.sh diagnostics",
+      "presentation": { "reveal": "always", "panel": "new", "title": "RBOTZILLA Diagnostics" },
+      "problemMatcher": []
+    },
+
+    {
+      "label": "👮 Position Police (close sub-$15k slots)",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash scripts/rbot_ctl.sh police",
+      "presentation": { "reveal": "always", "panel": "shared", "clear": true, "title": "Position Police" },
+      "problemMatcher": []
+    },
+
+    {
+      "label": "📈 Edge KPI Report (ET day)",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash scripts/rbot_ctl.sh edge-kpi",
+      "presentation": { "reveal": "always", "panel": "shared", "clear": true, "title": "Edge KPI" },
+      "problemMatcher": []
+    },
+
+    {
+      "label": "💾 Git Save (checkpoint)",
+      "type": "shell",
+      "command": "cd /home/rfing/RBOTZILLA_PHOENIX && bash scripts/rbot_ctl.sh save",
+      "presentation": { "reveal": "always", "panel": "shared", "clear": false, "title": "Git Save" },
       "problemMatcher": []
     }
   ]

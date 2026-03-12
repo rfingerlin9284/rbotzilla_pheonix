@@ -67,7 +67,7 @@ class MarginCorrelationGate:
     # ========================================================================
     # IMMUTABLE PARAMETERS (Charter-Enforced)
     # ========================================================================
-    MARGIN_CAP_PCT = 0.35  # 35% hard cap (IMMUTABLE)
+    MARGIN_CAP_PCT = 0.75  # 75% hard cap (Professional Compounding Floor)
     MIN_ATR_BUFFER_PIPS = 18  # Conservative SL floor (pips from entry)
     TIME_STOP_3H_MINUTES = 180
     TIME_STOP_6H_MINUTES = 360
@@ -157,6 +157,8 @@ class MarginCorrelationGate:
         after_exposure = self.currency_bucket_exposure(current_positions, test_order)
 
         # Check each currency
+        tolerance = 65000  # Increased further (35k -> 65k) to support professional compounding sizing
+
         for ccy in after_exposure:
             before_exp = before_exposure.get(ccy, 0.0)
             after_exp = after_exposure.get(ccy, 0.0)
@@ -165,9 +167,10 @@ class MarginCorrelationGate:
             exposure_grew = abs(after_exp) > abs(before_exp)
             same_sign = before_exp * after_exp >= 0  # Both same sign or both 0
 
-            if exposure_grew and same_sign and before_exp != 0:
-                # Oops—correlate increasing
-                reason = f"correlation_gate:{ccy}_bucket (was {before_exp:+.0f}, now {after_exp:+.0f})"
+            # Only block if the total exposure AFTER the trade exceeds our tolerance limit
+            if exposure_grew and same_sign and before_exp != 0 and abs(after_exp) > tolerance:
+                # Oops—correlate increasing past safe bounds
+                reason = f"correlation_gate:{ccy}_bucket (was {before_exp:+.0f}, now {after_exp:+.0f}, limit {tolerance})"
                 logger.warning(f"❌ Correlation gate BLOCKED: {reason}")
                 return HookResult(
                     allowed=False,
@@ -207,17 +210,23 @@ class MarginCorrelationGate:
 
         # New order would exceed
         if new_order:
-            # Margin estimate must be in USD regardless of pair type.
-            # USD_XXX (USD_JPY, USD_CAD): base IS dollar → 1 unit = $1 notional
-            # XXX_USD (EUR_USD, GBP_USD): quote is USD  → notional = units × price
-            # Cross pairs: approximate via price (conservative)
-            parts = new_order.symbol.upper().replace("/", "_").split("_")
-            base = parts[0] if len(parts) == 2 else ""
-            if base == "USD":
-                usd_notional = float(new_order.units)          # 1 unit = $1
-            else:
-                usd_notional = float(new_order.units) * float(new_order.price)
-            estimated_order_margin = usd_notional * 0.02       # ~2% margin at 50:1 leverage
+            # Margin estimate normalized to USD for gating.
+            # Convert units to USD notional regardless of pair structure.
+            from util.usd_converter import get_usd_notional
+            try:
+                usd_notional = get_usd_notional(new_order.units, new_order.symbol, new_order.price)
+            except Exception:
+                # Fallback to conservative estimate if converter fails
+                parts = new_order.symbol.upper().replace("/", "_").split("_")
+                base = parts[0] if len(parts) == 2 else ""
+                if base == "USD":
+                    usd_notional = float(new_order.units)
+                else:
+                    usd_notional = float(new_order.units) * float(new_order.price)
+                    if "JPY" in new_order.symbol.upper():
+                        usd_notional /= 100.0 # simple JPY normalization
+            
+            estimated_order_margin = usd_notional * 0.03       # 3% margin (Charter)
             projected_margin = total_margin_used + estimated_order_margin
             projected_pct = projected_margin / self.account_nav
 

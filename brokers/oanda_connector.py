@@ -381,11 +381,11 @@ class OandaConnector:
                             "units": str(units),
                             "timeInForce": OandaTimeInForce.FOK.value,  # Fill or Kill
                             "stopLossOnFill": {
-                                "price": str(stop_loss),
+                                "price": self._format_price(stop_loss, instrument),
                                 "timeInForce": OandaTimeInForce.GTC.value
                             },
                             "takeProfitOnFill": {
-                                "price": str(take_profit),
+                                "price": self._format_price(take_profit, instrument),
                                 "timeInForce": OandaTimeInForce.GTC.value
                             }
                         }
@@ -397,15 +397,15 @@ class OandaConnector:
                             "type": OandaOrderType.LIMIT.value,
                             "instrument": instrument,
                             "units": str(units),
-                            "price": str(entry_price),
+                            "price": self._format_price(entry_price, instrument),
                             "timeInForce": OandaTimeInForce.GTD.value,
                             "gtdTime": (datetime.now(timezone.utc) + timedelta(hours=ttl_hours)).isoformat(),
                             "stopLossOnFill": {
-                                "price": str(stop_loss),
+                                "price": self._format_price(stop_loss, instrument),
                                 "timeInForce": OandaTimeInForce.GTC.value
                             },
                             "takeProfitOnFill": {
-                                "price": str(take_profit),
+                                "price": self._format_price(take_profit, instrument),
                                 "timeInForce": OandaTimeInForce.GTC.value
                             }
                         }
@@ -497,15 +497,15 @@ class OandaConnector:
                         "type": "LIMIT",
                         "instrument": instrument,
                         "units": str(units),
-                        "price": str(entry_price),
+                        "price": self._format_price(entry_price, instrument),
                         "timeInForce": "GTD",
                         "gtdTime": (datetime.now(timezone.utc) + timedelta(hours=ttl_hours)).isoformat(),
                         "stopLossOnFill": {
-                            "price": str(stop_loss),
+                            "price": self._format_price(stop_loss, instrument),
                             "timeInForce": "GTC"
                         },
                         "takeProfitOnFill": {
-                            "price": str(take_profit),
+                            "price": self._format_price(take_profit, instrument),
                             "timeInForce": "GTC"
                         }
                     }
@@ -857,6 +857,13 @@ class OandaConnector:
             self.logger.error(f"Failed to fetch live prices: {e}")
             return {}
 
+    def _format_price(self, price: float, instrument: str) -> str:
+        """Format price string to the correct decimal places for OANDA API."""
+        if any(curr in instrument for curr in ["JPY", "HUF", "THB", "ZAR"]):
+            return f"{float(price):.3f}"
+        else:
+            return f"{float(price):.5f}"
+
     def cancel_order(self, order_id: str) -> Dict[str, Any]:
         """Cancel a pending order by id."""
         try:
@@ -868,19 +875,40 @@ class OandaConnector:
             return {"success": False, "error": str(e)}
 
     def set_trade_stop(self, trade_id: str, stop_price: float) -> Dict[str, Any]:
-        """Set/modify the stop loss price for an existing trade. Uses OANDA trade modification endpoint.
-
-        Note: exact payload is compatible with OANDA v20 update trade orders. If your broker returns
-        a different schema adjust accordingly.
+        """Set/modify the stop loss price for an existing trade.  Self-heals on
+        PRICE_PRECISION_EXCEEDED by retrying with progressively simpler rounding.
         """
         try:
             payload = {
                 "stopLoss": {
-                    "price": str(stop_price)
+                    "price": self._format_price(stop_price, trade_id)
                 }
             }
             endpoint = f"/v3/accounts/{self.account_id}/trades/{trade_id}/orders"
             resp = self._make_request("PUT", endpoint, payload)
+
+            # ── Self-healing: catch precision rejections and retry automatically ─
+            if not resp.get("success") and "PRICE_PRECISION_EXCEEDED" in resp.get("error", ""):
+                self.logger.warning(
+                    f"⚠️  SL precision rejected for trade {trade_id} @ {stop_price}"
+                    f" — self-healing with reduced decimal places"
+                )
+                for decimals in [3, 5, 2]:
+                    corrected = f"{stop_price:.{decimals}f}"
+                    retry_resp = self._make_request(
+                        "PUT", endpoint, {"stopLoss": {"price": corrected}}
+                    )
+                    if retry_resp.get("success"):
+                        self.logger.info(
+                            f"✅ SL self-healed for {trade_id}: "
+                            f"{stop_price} → {corrected} ({decimals}dp)"
+                        )
+                        return retry_resp
+                # All retries exhausted — flag loudly for watchdog
+                self.logger.error(
+                    f"❌ SL SELF-HEAL FAILED trade={trade_id} price={stop_price} "
+                    f"— POSITION HAS NO UPDATED STOP LOSS"
+                )
             return resp
         except Exception as e:
             self.logger.error(f"Failed to set stop for trade {trade_id}: {e}")

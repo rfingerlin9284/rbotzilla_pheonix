@@ -80,9 +80,13 @@ class TerminalDisplay:
         print(f"\n{Colors.CYAN}{'  ► ' + title}{Colors.RESET}")
     
     @staticmethod
-    def info(label: str, value: str, color=Colors.WHITE):
+    def info(label: str, value: str = "", color=Colors.WHITE):
         """Display labeled information"""
-        print(f"{Colors.BRIGHT_BLACK}  • {Colors.RESET}{Colors.WHITE}{label}:{Colors.RESET} {color}{value}{Colors.RESET}")
+        if not value:
+            # If only one argument provided, treat label as the message
+            print(f"{Colors.BRIGHT_BLACK}  • {Colors.RESET}{Colors.WHITE}{label}{Colors.RESET}")
+        else:
+            print(f"{Colors.BRIGHT_BLACK}  • {Colors.RESET}{Colors.WHITE}{label}:{Colors.RESET} {color}{value}{Colors.RESET}")
     
     @staticmethod
     def success(message: str):
