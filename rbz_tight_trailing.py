@@ -146,13 +146,15 @@ def _apply_tight_sl(
     if not meta.get("tight_step1", False):
         tgt = entry * (1.0 + policy.step1_trigger_pct) if side=="BUY" else entry * (1.0 - policy.step1_trigger_pct)
         if (side=="BUY" and price >= tgt) or (side=="SELL" and price <= tgt):
+            # Ensure Step 1 lock clears spread (minimum 3 pips)
+            min_lock_pips = 0.0003 if 'JPY' not in symbol else 0.03
             if side == "BUY":
-                new_sl = entry * (1.0 + policy.step1_lock_pct)
+                new_sl = max(entry * (1.0 + policy.step1_lock_pct), entry + min_lock_pips)
                 if new_sl > sl:
                     adjust_stop_cb(trade_id, new_sl); meta["tight_step1"] = True; changed = True
                     log(f"[TightSL] {symbol} STEP1 lock → SL {new_sl:.5f}")
             else:
-                new_sl = entry * (1.0 - abs(policy.step1_lock_pct))
+                new_sl = min(entry * (1.0 - abs(policy.step1_lock_pct)), entry - min_lock_pips)
                 if sl == 0.0 or new_sl < sl:
                     adjust_stop_cb(trade_id, new_sl); meta["tight_step1"] = True; changed = True
                     log(f"[TightSL] {symbol} STEP1 lock → SL {new_sl:.5f}")

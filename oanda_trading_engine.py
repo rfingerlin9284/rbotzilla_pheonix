@@ -2599,21 +2599,31 @@ class OandaTradingEngine:
         lock_pips = float(os.getenv('RBOT_GREEN_LOCK_PIPS', '5.0'))
         lock_distance = lock_pips * pip_size
 
-        # ── Minimum profit gate ───────────────────────────────────────────────
-        # Do NOT activate until price has moved at least min_profit_pips beyond entry.
-        # Default = 15 pips (3x lock distance). Without this, SL lands inside spread
-        # = guaranteed instant stop-out.
-        min_profit_pips = float(os.getenv('RBOT_GREEN_LOCK_MIN_PROFIT_PIPS', '15.0'))
+        # ── Minimum profit gate vs Explicit Trailing ────────────────────────
+        # If rbz_tight_trailing provided a candidate_sl that is *already* in profit,
+        # we respect it as an explicit lock attempt and bypass the min_profit gate,
+        # provided it clears the spread (fallback lock_distance).
+        is_candidate_in_profit = False
+        if (direction or '').upper() == 'BUY':
+            is_candidate_in_profit = proposed > entry_price
+        else:
+            is_candidate_in_profit = proposed > 0 and proposed < entry_price
+
+        # Default fallback lock (5 pips)
+        min_profit_pips = float(os.getenv('RBOT_GREEN_LOCK_MIN_PROFIT_PIPS', '10.0'))
         min_profit_distance = min_profit_pips * pip_size
         actual_profit_distance = abs(current_price - entry_price)
-        if actual_profit_distance < min_profit_distance:
-            return proposed, False, None  # not far enough in profit — hold SL
+
+        if not is_candidate_in_profit and actual_profit_distance < min_profit_distance:
+            # If the candidate IS NOT a profit lock, and we haven't hit the 
+            # fallback green lock trigger, hold the original SL.
+            return proposed, False, None  
 
         if (direction or '').upper() == 'BUY':
-            green_floor = entry_price + lock_distance
+            green_floor = max(entry_price + lock_distance, proposed if is_candidate_in_profit else 0)
             adjusted = max(proposed, green_floor)
         else:
-            green_floor = entry_price - lock_distance
+            green_floor = min(entry_price - lock_distance, proposed if is_candidate_in_profit else float('inf'))
             adjusted = min(proposed, green_floor)
 
         return adjusted, abs(adjusted - proposed) > 1e-12, green_floor
