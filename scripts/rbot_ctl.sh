@@ -82,6 +82,7 @@ start)
         warn "Already running (PID $pid). Use 'restart' to reload."
         exit 0
     fi
+    bash "$ROOT/scripts/rbot_ctl.sh" preflight
     require_venv
     mkdir -p "$ROOT/logs"
     rm -f /tmp/rbot_last_scan_key
@@ -105,6 +106,7 @@ start-live)
         warn "Already running (PID $pid). Use 'restart' to reload."
         exit 0
     fi
+    bash "$ROOT/scripts/rbot_ctl.sh" preflight
     require_venv
     # Live mode requires runtime config to be LIVE first
     "$PYTHON" -c "
@@ -158,6 +160,18 @@ watchdog)
     cd "$ROOT" && "$PYTHON" scripts/order_watchdog.py
     ;;
 
+
+# ── preflight ──────────────────────────────────────────────────────────────────
+preflight)
+    hdr "PREFLIGHT: LIVE-FIRE QC & BACKUP SYNC"
+    require_venv
+    info "Running SL & API Live-Fire Verification Checks..."
+    "$PYTHON" "$ROOT/scripts/qc_sl_test.py" --live-fire
+    info "Triggering async git save & tarball backup sync..."
+    # Launch backups in background to not delay startup
+    nohup bash -c "cd $ROOT && git add -A && git commit -m 'chore: Auto-sync on startup $(date)' >/dev/null 2>&1; git push origin main >/dev/null 2>&1 || true; cd /home/rfing/rbtz_pheonix_1 && git pull origin main >/dev/null 2>&1 || true; cd /home/rfing/rbtz_pheonix_2 && git pull origin main >/dev/null 2>&1 || true; chmod +w /home/rfing/rbtz_pheonix_backups/ || true; rm -f /home/rfing/rbtz_pheonix_backups/*.tar.gz || true; tar -czf /home/rfing/rbtz_pheonix_backups/rbtz_pheonix_1.tar.gz -C /home/rfing/rbtz_pheonix_1/ . || true; tar -czf /home/rfing/rbtz_pheonix_backups/rbtz_pheonix_2.tar.gz -C /home/rfing/rbtz_pheonix_2/ . || true; chmod -w /home/rfing/rbtz_pheonix_backups/ || true" >/dev/null 2>&1 &
+    ok "Preflight complete. Launching engine..."
+    ;;
 
 # ── stop ─────────────────────────────────────────────────────────────────────
 stop)
@@ -697,6 +711,7 @@ help|--help|-h|*)
     echo "    start            Start OANDA engine (paper)"
     echo "    start-live       Start OANDA engine (live — set RICK_PIN first)"
     echo "    start-auto       Start by current runtime mode (PAPER/LIVE)"
+    echo "    preflight        Run live-fire QC test and async git/backup sync"
     echo "    stop             Stop all RBOTzilla processes"
     echo "    shutdown         Alias for stop"
     echo "    restart          Stop + start"
